@@ -1,0 +1,30 @@
+{
+  "poll_interval_seconds": 10,
+  "disk_paths": ["/"],
+  "top_process_count": 5,
+
+  "triggers": {
+    "cpu_percent": 90.0,
+    "memory_percent": 85.0,
+    "disk_percent": 90.0,
+    "disk_growth_mb_per_sec": 50.0
+  },
+
+  "actions": {
+    "kill_processes": [],
+    "restart_processes": [],
+    "webhook_urls": [],
+    "process_whitelist": ["systemd", "init", "sshd", "kernel"]
+  },
+
+  "cooldown": {
+    "cooldown_seconds": 300,
+    "max_retries": 3
+  },
+
+  "log": {
+    "log_file": "sentinel.log",
+    "log_format": "json",
+    "max_log_size_mb": 50
+  }
+}
