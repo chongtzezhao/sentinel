@@ -19,5 +19,8 @@ sentinel.log.*
 .vscode/
 .idea/
 
+# Secrets
+.env
+
 # OS
 .DS_Store

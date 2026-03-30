@@ -53,6 +53,7 @@ class SentinelDaemon:
                     handle_alerts(
                         alerts,
                         self._config.actions,
+                        self._config.notifications,
                         self._cooldown,
                         self._logger,
                     )

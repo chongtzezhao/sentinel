@@ -26,5 +26,11 @@
     "log_file": "sentinel.log",
     "log_format": "json",
     "max_log_size_mb": 50
+  },
+
+  "notifications": {
+    "telegram": {
+      "enabled": true
+    }
   }
 }

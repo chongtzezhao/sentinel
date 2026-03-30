@@ -1,0 +1,1 @@
+"""Sentinel notification hooks."""

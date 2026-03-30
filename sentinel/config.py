@@ -42,6 +42,20 @@ class LogConfig:
 
 
 @dataclass
+class TelegramConfig:
+    """Telegram Bot API notification settings."""
+    enabled: bool = False
+    bot_token: str = ""  # from SENTINEL_TELEGRAM_BOT_TOKEN env var
+    chat_id: str = ""    # from SENTINEL_TELEGRAM_CHAT_ID env var
+
+
+@dataclass
+class NotificationsConfig:
+    """Notification hook settings."""
+    telegram: TelegramConfig = field(default_factory=TelegramConfig)
+
+
+@dataclass
 class SentinelConfig:
     """Top-level Sentinel configuration."""
     poll_interval_seconds: int = 10
@@ -51,6 +65,7 @@ class SentinelConfig:
     actions: ActionConfig = field(default_factory=ActionConfig)
     cooldown: CooldownConfig = field(default_factory=CooldownConfig)
     log: LogConfig = field(default_factory=LogConfig)
+    notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
 
 
 def load_config(path: Optional[str] = None) -> SentinelConfig:
@@ -109,5 +124,23 @@ def load_config(path: Optional[str] = None) -> SentinelConfig:
             log_format=lg.get("log_format", "json"),
             max_log_size_mb=lg.get("max_log_size_mb", 50),
         )
+
+    # Notifications – enabled flags from config, secrets from env vars
+    if "notifications" in raw:
+        n = raw["notifications"]
+        tg = n.get("telegram", {})
+        config.notifications = NotificationsConfig(
+            telegram=TelegramConfig(
+                enabled=tg.get("enabled", False),
+                bot_token=os.environ.get("SENTINEL_TELEGRAM_BOT_TOKEN", ""),
+                chat_id=os.environ.get("SENTINEL_TELEGRAM_CHAT_ID", ""),
+            ),
+        )
+
+    # Webhook URLs – config file list merged with env var (comma-separated)
+    env_urls = os.environ.get("SENTINEL_WEBHOOK_URLS", "")
+    if env_urls:
+        extra = [u.strip() for u in env_urls.split(",") if u.strip()]
+        config.actions.webhook_urls.extend(extra)
 
     return config

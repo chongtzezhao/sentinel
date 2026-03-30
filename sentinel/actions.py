@@ -16,7 +16,7 @@ from logging.handlers import RotatingFileHandler
 
 import psutil
 
-from sentinel.config import ActionConfig, CooldownConfig, LogConfig
+from sentinel.config import ActionConfig, CooldownConfig, LogConfig, NotificationsConfig
 from sentinel.triggers import Alert
 
 
@@ -182,6 +182,7 @@ def send_webhooks(urls: list[str], alert: Alert, logger: logging.Logger) -> None
 def handle_alerts(
     alerts: list[Alert],
     action_config: ActionConfig,
+    notifications: NotificationsConfig,
     cooldown: CooldownTracker,
     logger: logging.Logger,
 ) -> None:
@@ -204,5 +205,13 @@ def handle_alerts(
         # Webhooks
         if action_config.webhook_urls:
             send_webhooks(action_config.webhook_urls, alert, logger)
+
+        # Notification hooks
+        tg = notifications.telegram
+        if tg.enabled and tg.bot_token and tg.chat_id:
+            from hooks.telegram import send as telegram_send
+            telegram_send(alert, tg.bot_token, tg.chat_id, logger)
+        elif tg.enabled and (not tg.bot_token or not tg.chat_id):
+            logger.warning("Telegram enabled but missing SENTINEL_TELEGRAM_BOT_TOKEN or SENTINEL_TELEGRAM_CHAT_ID")
 
         cooldown.record(alert.metric)
