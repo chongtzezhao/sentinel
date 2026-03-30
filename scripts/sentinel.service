@@ -1,0 +1,18 @@
+[Unit]
+Description=Sentinel – Lightweight System Monitor
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/sentinel
+ExecStart=/home/ubuntu/sentinel/.venv/bin/python -m sentinel run
+Restart=on-failure
+RestartSec=5
+
+# Optional hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/ubuntu/sentinel
+
+[Install]
+WantedBy=multi-user.target
