@@ -5,8 +5,10 @@
 
   "triggers": {
     "cpu_percent": 90.0,
-    "memory_percent": 85.0,
-    "disk_percent": 90.0,
+    "memory_warning_available_mb": 1024.0,
+    "memory_critical_available_mb": 50.0,
+    "disk_warning_free_gb": 10.0,
+    "disk_critical_free_gb": 1.0,
     "disk_growth_mb_per_sec": 50.0
   },
 
@@ -17,15 +19,21 @@
     "process_whitelist": ["systemd", "init", "sshd", "kernel"]
   },
 
-  "cooldown": {
-    "cooldown_seconds": 300,
-    "max_retries": 3
+  "notification_policy": {
+    "critical_repeat_seconds": 1800,
+    "persistent_repeat_seconds": 21600,
+    "rapid_repeat_count": 3,
+    "delivery_retry_seconds": [60, 300, 900, 1800],
+    "send_recovery": true,
+    "state_file": "/var/lib/sentinel/alert-state.json"
   },
 
   "log": {
     "log_file": "sentinel.log",
     "log_format": "json",
-    "max_log_size_mb": 50
+    "log_to_file": false,
+    "max_log_size_mb": 10,
+    "backup_count": 2
   },
 
   "notifications": {

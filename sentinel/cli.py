@@ -7,9 +7,10 @@ Provides:
 
 import argparse
 import json
+import logging
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sentinel import __version__
 from sentinel.config import load_config
@@ -18,21 +19,29 @@ from sentinel.monitor import SystemMonitor, SystemSnapshot
 
 def _format_status(snap: SystemSnapshot) -> str:
     """Render a human-readable status report."""
-    ts = datetime.fromtimestamp(snap.timestamp).strftime("%Y-%m-%d %H:%M:%S")
+    ts = (
+        datetime.fromtimestamp(snap.timestamp, UTC)
+        .astimezone()
+        .strftime("%Y-%m-%d %H:%M:%S")
+    )
     lines = [
         f"=== Sentinel System Status ({ts}) ===",
         "",
         f"  CPU Usage:    {snap.cpu.percent:.1f}%",
         "",
-        f"  Memory:       {snap.memory.percent:.1f}%  "
-        f"({snap.memory.used_mb:.0f} / {snap.memory.total_mb:.0f} MB)",
+        (
+            f"  Memory:       {snap.memory.percent:.1f}%  "
+            f"({snap.memory.used_mb:.0f} / {snap.memory.total_mb:.0f} MiB, "
+            f"{snap.memory.available_mb:.0f} MiB available)"
+        ),
     ]
 
     lines.append("")
     for d in snap.disks:
         lines.append(
             f"  Disk {d.path}:  {d.percent:.1f}%  "
-            f"({d.used_gb:.1f} / {d.total_gb:.1f} GB)  "
+            f"({d.used_gb:.1f} / {d.total_gb:.1f} GiB, "
+            f"{d.free_gb:.2f} GiB available)  "
             f"growth: {d.growth_mb_per_sec:.2f} MB/s"
         )
 
@@ -123,6 +132,12 @@ def main(argv: list[str] | None = None) -> None:
     # sentinel run
     sub.add_parser("run", help="Start the monitoring daemon")
 
+    # sentinel test-notification
+    sub.add_parser(
+        "test-notification",
+        help="Send a Telegram test and verify Telegram's response",
+    )
+
     args = parser.parse_args(argv)
     config = load_config(args.config)
 
@@ -141,6 +156,44 @@ def main(argv: list[str] | None = None) -> None:
         from sentinel.daemon import SentinelDaemon
         daemon = SentinelDaemon(config)
         daemon.run()
+
+    elif args.command == "test-notification":
+        from hooks.telegram import send as telegram_send
+        from sentinel.triggers import Alert, AlertLevel
+
+        tg = config.notifications.telegram
+        if not tg.enabled or not tg.bot_token or not tg.chat_id:
+            print(
+                "Telegram is disabled or missing its bot token/chat ID.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        logger = logging.getLogger("sentinel-test-notification")
+        logger.setLevel(logging.INFO)
+        logger.addHandler(logging.StreamHandler())
+        alert = Alert(
+            metric="sentinel:test-notification",
+            level=AlertLevel.WARNING,
+            message="Manual Sentinel notification test",
+            current_value=0.0,
+            threshold=0.0,
+        )
+        now = time.time()
+        result = telegram_send(
+            alert,
+            tg.bot_token,
+            tg.chat_id,
+            logger,
+            first_seen=now,
+        )
+        if not result.success:
+            print(f"Telegram test failed: {result.error}", file=sys.stderr)
+            sys.exit(1)
+        print(
+            f"Telegram test delivered successfully "
+            f"(status={result.status}, message_id={result.message_id})."
+        )
 
     else:
         parser.print_help()

@@ -1,0 +1,85 @@
+"""Tests for CooldownTracker.
+
+New behaviour (v2): one action is allowed immediately, then each
+subsequent action requires a full cooldown_seconds wait.  After
+max_retries total actions, the metric is silenced until explicitly
+reset (i.e. the alert clears).
+"""
+
+import pytest
+
+from sentinel.actions import CooldownTracker
+from sentinel.config import CooldownConfig
+
+
+@pytest.fixture
+def tracker():
+    return CooldownTracker(CooldownConfig(cooldown_seconds=60, max_retries=3))
+
+
+def test_first_action_is_allowed(tracker):
+    assert tracker.can_act("cpu") is True
+
+
+def test_blocked_immediately_after_first_action(tracker, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("sentinel.actions.time.time", lambda: now[0])
+
+    tracker.record("cpu")
+    now[0] += 10  # only 10s elapsed, cooldown is 60s
+    assert tracker.can_act("cpu") is False
+
+
+def test_allowed_after_cooldown_elapses(tracker, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("sentinel.actions.time.time", lambda: now[0])
+
+    tracker.record("cpu")
+    now[0] += 61  # past the 60s cooldown
+    assert tracker.can_act("cpu") is True
+
+
+def test_silenced_after_max_retries(tracker, monkeypatch):
+    """After 3 total actions (spaced by cooldown), no more until reset."""
+    now = [1000.0]
+    monkeypatch.setattr("sentinel.actions.time.time", lambda: now[0])
+
+    for i in range(3):
+        assert tracker.can_act("cpu") is True
+        tracker.record("cpu")
+        now[0] += 61  # advance past cooldown each time
+
+    # 3 actions taken — should be silenced even after cooldown
+    now[0] += 600
+    assert tracker.can_act("cpu") is False
+
+
+def test_reset_clears_retry_count(tracker, monkeypatch):
+    """After alert clears and reset is called, retries start fresh."""
+    now = [1000.0]
+    monkeypatch.setattr("sentinel.actions.time.time", lambda: now[0])
+
+    for i in range(3):
+        tracker.record("cpu")
+        now[0] += 61
+
+    assert tracker.can_act("cpu") is False
+
+    tracker.reset("cpu")
+    assert tracker.can_act("cpu") is True
+
+
+def test_reset_on_unknown_metric_is_safe(tracker):
+    tracker.reset("never-recorded")  # must not raise
+
+
+def test_metrics_are_tracked_independently(tracker, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("sentinel.actions.time.time", lambda: now[0])
+
+    for i in range(3):
+        tracker.record("cpu")
+        now[0] += 61
+
+    assert tracker.can_act("cpu") is False
+    assert tracker.can_act("memory") is True

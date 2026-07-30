@@ -3,15 +3,16 @@
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
 class TriggerConfig:
     """Thresholds that trigger actions."""
     cpu_percent: float = 90.0
-    memory_percent: float = 85.0
-    disk_percent: float = 90.0
+    memory_warning_available_mb: float = 1024.0
+    memory_critical_available_mb: float = 50.0
+    disk_warning_free_gb: float = 10.0
+    disk_critical_free_gb: float = 1.0
     disk_growth_mb_per_sec: float = 50.0
 
 
@@ -27,10 +28,16 @@ class ActionConfig:
 
 
 @dataclass
-class CooldownConfig:
-    """Cooldown/retry settings to prevent repeated actions."""
-    cooldown_seconds: int = 300
-    max_retries: int = 3
+class NotificationPolicyConfig:
+    """Stateful notification, retry, and reminder settings."""
+    critical_repeat_seconds: int = 1800
+    persistent_repeat_seconds: int = 21600
+    rapid_repeat_count: int = 3
+    delivery_retry_seconds: list[int] = field(
+        default_factory=lambda: [60, 300, 900, 1800]
+    )
+    send_recovery: bool = True
+    state_file: str = "/var/lib/sentinel/alert-state.json"
 
 
 @dataclass
@@ -38,7 +45,9 @@ class LogConfig:
     """Logging configuration."""
     log_file: str = "/var/log/sentinel.log"
     log_format: str = "json"  # "json" or "text"
-    max_log_size_mb: int = 50
+    log_to_file: bool = False
+    max_log_size_mb: int = 10
+    backup_count: int = 2
 
 
 @dataclass
@@ -63,12 +72,14 @@ class SentinelConfig:
     top_process_count: int = 5
     triggers: TriggerConfig = field(default_factory=TriggerConfig)
     actions: ActionConfig = field(default_factory=ActionConfig)
-    cooldown: CooldownConfig = field(default_factory=CooldownConfig)
+    notification_policy: NotificationPolicyConfig = field(
+        default_factory=NotificationPolicyConfig
+    )
     log: LogConfig = field(default_factory=LogConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
 
 
-def load_config(path: Optional[str] = None) -> SentinelConfig:
+def load_config(path: str | None = None) -> SentinelConfig:
     """Load configuration from a JSON file, falling back to defaults."""
     if path is None:
         path = os.environ.get("SENTINEL_CONFIG", "sentinel_config.json")
@@ -91,8 +102,14 @@ def load_config(path: Optional[str] = None) -> SentinelConfig:
         t = raw["triggers"]
         config.triggers = TriggerConfig(
             cpu_percent=t.get("cpu_percent", 90.0),
-            memory_percent=t.get("memory_percent", 85.0),
-            disk_percent=t.get("disk_percent", 90.0),
+            memory_warning_available_mb=t.get(
+                "memory_warning_available_mb", 1024.0
+            ),
+            memory_critical_available_mb=t.get(
+                "memory_critical_available_mb", 50.0
+            ),
+            disk_warning_free_gb=t.get("disk_warning_free_gb", 10.0),
+            disk_critical_free_gb=t.get("disk_critical_free_gb", 1.0),
             disk_growth_mb_per_sec=t.get("disk_growth_mb_per_sec", 50.0),
         )
 
@@ -108,12 +125,20 @@ def load_config(path: Optional[str] = None) -> SentinelConfig:
             ]),
         )
 
-    # Cooldown
-    if "cooldown" in raw:
-        c = raw["cooldown"]
-        config.cooldown = CooldownConfig(
-            cooldown_seconds=c.get("cooldown_seconds", 300),
-            max_retries=c.get("max_retries", 3),
+    # Stateful notification/reminder policy
+    if "notification_policy" in raw:
+        p = raw["notification_policy"]
+        config.notification_policy = NotificationPolicyConfig(
+            critical_repeat_seconds=p.get("critical_repeat_seconds", 1800),
+            persistent_repeat_seconds=p.get("persistent_repeat_seconds", 21600),
+            rapid_repeat_count=p.get("rapid_repeat_count", 3),
+            delivery_retry_seconds=p.get(
+                "delivery_retry_seconds", [60, 300, 900, 1800]
+            ),
+            send_recovery=p.get("send_recovery", True),
+            state_file=p.get(
+                "state_file", "/var/lib/sentinel/alert-state.json"
+            ),
         )
 
     # Log
@@ -122,7 +147,9 @@ def load_config(path: Optional[str] = None) -> SentinelConfig:
         config.log = LogConfig(
             log_file=lg.get("log_file", "/var/log/sentinel.log"),
             log_format=lg.get("log_format", "json"),
-            max_log_size_mb=lg.get("max_log_size_mb", 50),
+            log_to_file=lg.get("log_to_file", False),
+            max_log_size_mb=lg.get("max_log_size_mb", 10),
+            backup_count=lg.get("backup_count", 2),
         )
 
     # Notifications – enabled flags from config, secrets from env vars

@@ -5,9 +5,17 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/home/ubuntu/sentinel
+# Leading '-' makes the file optional; service still starts if .env is absent.
+EnvironmentFile=-/home/ubuntu/sentinel/.env
 ExecStart=/home/ubuntu/sentinel/.venv/bin/python -m sentinel run
 Restart=on-failure
 RestartSec=5
+StateDirectory=sentinel
+StateDirectoryMode=0750
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
 
 # Optional hardening
 NoNewPrivileges=true
