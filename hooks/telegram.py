@@ -29,6 +29,7 @@ class TelegramResult:
     status: int | None = None
     message_id: int | None = None
     error: str | None = None
+    retry_after: int | None = None
 
 
 def _duration(seconds: float) -> str:
@@ -55,10 +56,19 @@ def send(
     kind: str = "alert",
     first_seen: float | None = None,
     duration_seconds: float = 0.0,
+    undelivered_alert: bool = False,
 ) -> TelegramResult:
     """Send an alert or recovery and verify Telegram's JSON response."""
     value = format_value(alert)
-    if kind == "recovery":
+    if kind == "recovery" and undelivered_alert:
+        text = (
+            "⚠️ Sentinel Alert (recovered before delivery)\n"
+            f"Metric: {alert.metric}\n"
+            f"Condition active for: {_duration(duration_seconds)}\n"
+            f"Condition: {alert.message}\n"
+            f"Now: {value}"
+        )
+    elif kind == "recovery":
         text = (
             "✅ Sentinel Recovery\n"
             f"Metric: {alert.metric}\n"
@@ -127,6 +137,43 @@ def send(
                 description,
             )
             return TelegramResult(False, status=status, error=description)
+    except urllib.error.HTTPError as exc:
+        description = str(exc)
+        retry_after = None
+        try:
+            body = json.loads(exc.read().decode())
+            description = body.get("description", description)
+            raw_retry = body.get("parameters", {}).get("retry_after")
+            if raw_retry is not None:
+                retry_after = int(raw_retry)
+        except (
+            AttributeError,
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ):
+            pass
+
+        if exc.code == 429:
+            logger.warning(
+                "Telegram rate limited (status 429): %s; retry after %ss",
+                description,
+                retry_after,
+            )
+        else:
+            logger.error(
+                "Telegram notification failed (status %d): %s",
+                exc.code,
+                description,
+            )
+        return TelegramResult(
+            False,
+            status=exc.code,
+            error=description,
+            retry_after=retry_after,
+        )
     except (urllib.error.URLError, OSError) as exc:
         logger.error("Telegram notification failed: %s", exc)
         status = getattr(exc, "code", None)

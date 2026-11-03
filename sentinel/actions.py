@@ -12,6 +12,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 
 import psutil
@@ -145,22 +146,42 @@ def send_webhooks(urls: list[str], alert: Alert, logger: logging.Logger) -> bool
 # Orchestrator
 # ---------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class DeliveryResult:
+    """Outcome of one notification dispatch."""
+    success: bool
+    retry_after: int | None = None
+
+    def __bool__(self) -> bool:
+        return self.success
+
+
 def dispatch_notification(
     event: NotificationEvent,
     action_config: ActionConfig,
     notifications: NotificationsConfig,
     logger: logging.Logger,
-) -> bool:
-    """Execute one due alert/recovery event and report delivery success."""
+) -> DeliveryResult:
+    """Execute one due alert/recovery event and report delivery outcome."""
     alert = event.alert
     if event.kind == "recovery":
-        logger.info(
-            "RECOVERY %s after %.0fs: now %s (previous: %s)",
-            alert.metric,
-            event.duration_seconds,
-            format_value(alert),
-            alert.message,
-        )
+        if event.undelivered_alert:
+            logger.warning(
+                "RECOVERY %s after %.0fs: alert was never delivered; now %s "
+                "(previous: %s)",
+                alert.metric,
+                event.duration_seconds,
+                format_value(alert),
+                alert.message,
+            )
+        else:
+            logger.info(
+                "RECOVERY %s after %.0fs: now %s (previous: %s)",
+                alert.metric,
+                event.duration_seconds,
+                format_value(alert),
+                alert.message,
+            )
     else:
         logger.warning(
             "ALERT [%s] %s (notification reason: %s)",
@@ -179,6 +200,7 @@ def dispatch_notification(
             restart_processes(action_config.restart_processes, action_config.process_whitelist, logger)
 
     results: list[bool] = []
+    retry_after: int | None = None
 
     if action_config.webhook_urls:
         results.append(send_webhooks(action_config.webhook_urls, alert, logger))
@@ -195,8 +217,10 @@ def dispatch_notification(
             kind=event.kind,
             first_seen=event.first_seen,
             duration_seconds=event.duration_seconds,
+            undelivered_alert=event.undelivered_alert,
         )
         results.append(result.success)
+        retry_after = getattr(result, "retry_after", None)
     elif tg.enabled:
         logger.error(
             "Telegram enabled but missing SENTINEL_TELEGRAM_BOT_TOKEN "
@@ -206,4 +230,7 @@ def dispatch_notification(
 
     # With no external destinations, the state transition was still handled
     # locally and should not be retried forever.
-    return all(results) if results else True
+    return DeliveryResult(
+        all(results) if results else True,
+        retry_after=retry_after,
+    )

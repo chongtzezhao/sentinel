@@ -106,13 +106,13 @@ class SentinelDaemon:
             event_time=now,
             reason="manual-test",
         )
-        success = dispatch_notification(
+        result = dispatch_notification(
             event,
             self._config.actions,
             self._config.notifications,
             self._logger,
         )
-        if success:
+        if result.success:
             self._logger.info("Manual test notification completed successfully")
         else:
             self._logger.error("Manual test notification failed")
@@ -160,13 +160,16 @@ class SentinelDaemon:
                     alerts, snapshot_values(snapshot)
                 )
                 for event in events:
+                    retry_after = None
                     try:
-                        success = dispatch_notification(
+                        result = dispatch_notification(
                             event,
                             self._config.actions,
                             self._config.notifications,
                             self._logger,
                         )
+                        success = result.success
+                        retry_after = result.retry_after
                     except Exception:
                         success = False
                         self._logger.exception(
@@ -174,7 +177,9 @@ class SentinelDaemon:
                             event.kind,
                             event.metric,
                         )
-                    self._alert_states.record_result(event, success)
+                    self._alert_states.record_result(
+                        event, success, retry_after=retry_after
+                    )
 
             except Exception:
                 self._logger.exception("Error during monitoring cycle")

@@ -1,5 +1,6 @@
 """Tests for the Telegram notification hook."""
 
+import io
 import json
 import logging
 import urllib.error
@@ -124,3 +125,62 @@ def test_recovery_reports_the_clearing_value(monkeypatch, logger):
     body = json.loads(captured["data"])
     assert "Now: 74.2%" in body["text"]
     assert "Previous condition: CPU usage at 95.0%" in body["text"]
+
+
+def test_recovery_before_delivery_uses_a_combined_message(monkeypatch, logger):
+    captured = {}
+
+    class _Resp:
+        status = 200
+        def read(self):
+            return json.dumps({
+                "ok": True,
+                "result": {"message_id": 44},
+            }).encode()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["data"] = req.data
+        return _Resp()
+
+    monkeypatch.setattr(tg_mod.urllib.request, "urlopen", fake_urlopen)
+    alert = Alert(
+        metric="cpu",
+        level=AlertLevel.CRITICAL,
+        message="CPU usage at 95.0% (threshold: 90.0%)",
+        current_value=74.2,
+        threshold=90.0,
+        unit="% usage",
+    )
+
+    tg_mod.send(
+        alert, "TOKEN", "CHAT", logger,
+        kind="recovery", duration_seconds=12.0, undelivered_alert=True,
+    )
+
+    body = json.loads(captured["data"])
+    assert "recovered before delivery" in body["text"]
+    assert "Condition: CPU usage at 95.0%" in body["text"]
+    assert "Now: 74.2%" in body["text"]
+
+
+def test_send_honors_429_retry_after(monkeypatch, logger):
+    body = json.dumps({
+        "ok": False,
+        "error_code": 429,
+        "description": "Too Many Requests: retry later",
+        "parameters": {"retry_after": 17},
+    }).encode()
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 429, "Too Many Requests", {}, io.BytesIO(body)
+        )
+
+    monkeypatch.setattr(tg_mod.urllib.request, "urlopen", fake_urlopen)
+    result = tg_mod.send(_alert(), "TOKEN", "CHAT", logger)
+
+    assert result.success is False
+    assert result.retry_after == 17
+    assert result.status == 429

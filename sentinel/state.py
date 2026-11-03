@@ -31,6 +31,8 @@ class AlertState:
     consecutive_failures: int = 0
     force_due: bool = False
     breaching: bool = True
+    next_attempt: float | None = None
+    level_delivered: bool = True
 
     @classmethod
     def from_alert(cls, alert: Alert, now: float) -> AlertState:
@@ -45,6 +47,7 @@ class AlertState:
             first_seen=now,
             last_seen=now,
             breaching=alert.breaching,
+            level_delivered=False,
         )
 
     def as_alert(self) -> Alert:
@@ -67,6 +70,7 @@ class NotificationEvent:
     first_seen: float
     event_time: float
     reason: str
+    undelivered_alert: bool = False
 
     @property
     def duration_seconds(self) -> float:
@@ -126,6 +130,9 @@ class AlertStateStore:
             state.unit = alert.unit
             state.breaching = alert.breaching
 
+            if previous_level != alert.level.value:
+                state.level_delivered = False
+
             if not was_active:
                 state.first_seen = now
                 state.last_attempt = None
@@ -133,6 +140,7 @@ class AlertStateStore:
                 state.successful_notifications = 0
                 state.consecutive_failures = 0
                 state.force_due = True
+                state.level_delivered = False
             elif (
                 previous_level == AlertLevel.WARNING.value
                 and alert.level == AlertLevel.CRITICAL
@@ -170,6 +178,7 @@ class AlertStateStore:
                     reason = "delivery-retry"
                 else:
                     reason = "reminder"
+                undelivered_alert = not state.active and not state.level_delivered
                 events.append(
                     NotificationEvent(
                         metric=state.metric,
@@ -178,6 +187,7 @@ class AlertStateStore:
                         first_seen=state.first_seen,
                         event_time=now,
                         reason=reason,
+                        undelivered_alert=undelivered_alert,
                     )
                 )
 
@@ -185,7 +195,12 @@ class AlertStateStore:
             self._save()
         return events
 
-    def record_result(self, event: NotificationEvent, success: bool) -> None:
+    def record_result(
+        self,
+        event: NotificationEvent,
+        success: bool,
+        retry_after: int | None = None,
+    ) -> None:
         """Record a delivery result; failed attempts never count as delivery."""
         state = self._states.get(event.metric)
         if state is None:
@@ -198,10 +213,17 @@ class AlertStateStore:
             state.last_success = now
             state.successful_notifications += 1
             state.consecutive_failures = 0
+            state.next_attempt = None
+            if event.kind == "alert":
+                state.level_delivered = True
             if event.kind == "recovery":
                 del self._states[event.metric]
         else:
             state.consecutive_failures += 1
+            if retry_after is not None:
+                state.next_attempt = now + max(0.0, float(retry_after))
+            else:
+                state.next_attempt = None
         self._save()
 
     def reset_for_test(self, metric: str) -> None:
@@ -210,10 +232,16 @@ class AlertStateStore:
             self._save()
 
     def _is_due(self, state: AlertState, now: float) -> bool:
+        if state.next_attempt is not None and now < state.next_attempt:
+            return False
+
         if state.force_due:
             return True
 
         if state.consecutive_failures > 0 and state.last_attempt is not None:
+            if state.next_attempt is not None:
+                # A 429 retry_after is authoritative while it is set.
+                return True
             delays = self._config.delivery_retry_seconds or [1800]
             index = min(state.consecutive_failures - 1, len(delays) - 1)
             return now - state.last_attempt >= delays[index]

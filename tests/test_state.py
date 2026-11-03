@@ -174,3 +174,58 @@ def test_breaching_flag_survives_state_round_trip(tmp_path):
     reminder = store.sync([alert])[0]
     assert reminder.reason == "reminder"
     assert reminder.alert.breaching is False
+
+
+def test_recovery_marks_an_undelivered_alert(tmp_path):
+    now = [1000.0]
+    store = _store(tmp_path, now)
+    event = store.sync([_alert()])[0]
+    store.record_result(event, False)
+
+    now[0] += 90
+    recovery = store.sync([], {"disk:/": 12.5})[0]
+    assert recovery.kind == "recovery"
+    assert recovery.undelivered_alert is True
+
+
+def test_recovery_after_delivery_is_not_marked_undelivered(tmp_path):
+    now = [1000.0]
+    store = _store(tmp_path, now)
+    event = store.sync([_alert()])[0]
+    store.record_result(event, True)
+
+    now[0] += 90
+    recovery = store.sync([], {"disk:/": 12.5})[0]
+    assert recovery.kind == "recovery"
+    assert recovery.undelivered_alert is False
+
+
+def test_recovery_marks_a_failed_critical_escalation(tmp_path):
+    now = [1000.0]
+    store = _store(tmp_path, now)
+    warning = store.sync([_alert(AlertLevel.WARNING)])[0]
+    store.record_result(warning, True)
+
+    now[0] += 1
+    critical = store.sync([_alert(AlertLevel.CRITICAL)])[0]
+    assert critical.reason == "state-change"
+    store.record_result(critical, False)
+
+    now[0] += 90
+    recovery = store.sync([], {"disk:/": 12.5})[0]
+    assert recovery.kind == "recovery"
+    assert recovery.undelivered_alert is True
+
+
+def test_retry_after_delays_the_next_attempt(tmp_path):
+    now = [1000.0]
+    store = _store(tmp_path, now)
+    event = store.sync([_alert()])[0]
+    store.record_result(event, False, retry_after=17)
+
+    now[0] += 16
+    assert store.sync([_alert()]) == []
+
+    now[0] += 1
+    retry = store.sync([_alert()])[0]
+    assert retry.reason == "delivery-retry"

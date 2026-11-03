@@ -39,7 +39,9 @@ New conditions notify immediately. Critical conditions repeat every 30
 minutes for the first three successful deliveries and every six hours
 afterward. Warnings repeat every six hours. Failed deliveries retry with
 backoff and do not count as successful notifications. A recovery message is
-sent when a condition clears.
+sent when a condition clears. If a condition clears before its first alert was
+delivered, one combined “alert, recovered before delivery” message is sent
+instead. Telegram 429 responses honor the API's `retry_after` value.
 
 Alert state is persisted in `/var/lib/sentinel/alert-state.json`, so restarts
 do not reset notification history.

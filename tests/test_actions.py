@@ -142,7 +142,7 @@ def test_dispatch_notification_fails_when_telegram_unconfigured(logger, caplog):
     with caplog.at_level(logging.ERROR, logger="sentinel-test"):
         result = dispatch_notification(_event(), ActionConfig(), notifs, logger)
 
-    assert result is False
+    assert result.success is False
     messages = [r.message for r in caplog.records]
     assert any("Telegram enabled but missing" in m for m in messages)
 
@@ -195,3 +195,20 @@ def test_hysteresis_band_alert_does_not_run_process_actions(monkeypatch, logger)
         event, ActionConfig(kill_processes=["foo"]), NotificationsConfig(), logger
     )
     assert called == []
+
+
+def test_dispatch_notification_propagates_retry_after(monkeypatch, logger):
+    import hooks.telegram as tg_mod
+
+    def fake_send(alert, token, chat, log, **kwargs):
+        return SimpleNamespace(success=False, retry_after=17)
+
+    monkeypatch.setattr(tg_mod, "send", fake_send)
+
+    notifs = NotificationsConfig(
+        telegram=TelegramConfig(enabled=True, bot_token="t", chat_id="c"),
+    )
+    result = dispatch_notification(_event(), ActionConfig(), notifs, logger)
+
+    assert result.success is False
+    assert result.retry_after == 17
