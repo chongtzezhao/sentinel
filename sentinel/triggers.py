@@ -202,7 +202,8 @@ def _is_cleared(alert: Alert, value: float, hysteresis_percent: float) -> bool:
     """Return True when *value* is past the recovery bound for *alert*.
 
     Low-is-bad metrics (memory available, disk free) recover above their
-    threshold. High-is-bad metrics (CPU, swap, disk growth) recover below it.
+    threshold. High-is-bad metrics (CPU, memory pressure, disk growth) recover
+    below it.
     """
     bound = _clear_bound(alert, hysteresis_percent)
     if _is_low_is_bad(alert):
@@ -228,11 +229,6 @@ def _refresh_alert(
         message = (
             f"Memory available at {value:.0f} MiB "
             f"(still active; clears above {bound:.0f} MiB)"
-        )
-    elif alert.metric == "swap":
-        message = (
-            f"Swap usage at {value:.1f}% "
-            f"(still active; clears below {bound:.1f}%)"
         )
     elif alert.metric == "memory_pressure":
         message = (

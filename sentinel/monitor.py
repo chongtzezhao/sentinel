@@ -128,15 +128,9 @@ class SystemMonitor:
             return (0.0, 0.0, 0.0)
 
     @staticmethod
-    def _collect_memory_pressure() -> MemoryPressureMetrics:
-        try:
-            with open("/proc/pressure/memory", "r") as handle:
-                lines = handle.read().splitlines()
-        except OSError:
-            return MemoryPressureMetrics()
-
+    def _parse_memory_pressure(text: str) -> MemoryPressureMetrics:
         values: dict[str, dict[str, float]] = {}
-        for line in lines:
+        for line in text.splitlines():
             parts = line.split()
             if len(parts) < 2 or parts[0] not in ("some", "full"):
                 continue
@@ -153,15 +147,28 @@ class SystemMonitor:
 
         some = values.get("some", {})
         full = values.get("full", {})
+        if "avg60" not in some:
+            # Do not claim pressure data is available if the expected
+            # some/avg60 field is missing.
+            return MemoryPressureMetrics()
         return MemoryPressureMetrics(
             some_avg10=some.get("avg10", 0.0),
-            some_avg60=some.get("avg60", 0.0),
+            some_avg60=some["avg60"],
             some_avg300=some.get("avg300", 0.0),
             full_avg10=full.get("avg10", 0.0),
             full_avg60=full.get("avg60", 0.0),
             full_avg300=full.get("avg300", 0.0),
             available=True,
         )
+
+    @staticmethod
+    def _collect_memory_pressure() -> MemoryPressureMetrics:
+        try:
+            with open("/proc/pressure/memory", "r") as handle:
+                text = handle.read()
+        except OSError:
+            return MemoryPressureMetrics()
+        return SystemMonitor._parse_memory_pressure(text)
 
     # ---- Disk ----
 
