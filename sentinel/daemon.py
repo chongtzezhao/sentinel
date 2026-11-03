@@ -13,7 +13,12 @@ from sentinel.actions import dispatch_notification, setup_logger
 from sentinel.config import SentinelConfig
 from sentinel.monitor import SystemMonitor
 from sentinel.state import AlertStateStore, NotificationEvent
-from sentinel.triggers import Alert, AlertLevel, evaluate
+from sentinel.triggers import (
+    Alert,
+    AlertLevel,
+    TriggerEvaluator,
+    metric_values,
+)
 
 TEST_ALERT_METRIC = "sentinel:test-alert"
 
@@ -31,6 +36,19 @@ class SentinelDaemon:
         )
         self._logger = setup_logger(config.log)
         self._alert_states = AlertStateStore(config.notification_policy)
+        self._evaluator = TriggerEvaluator(config.triggers)
+        restored = []
+        for state in self._alert_states.states.values():
+            if not state.active:
+                continue
+            try:
+                restored.append(state.as_alert())
+            except (TypeError, ValueError):
+                self._logger.error(
+                    "Ignoring invalid persisted alert state for %s",
+                    state.metric,
+                )
+        self._evaluator.restore(restored)
 
     def _handle_signal(self, signum: int, _frame: object) -> None:
         sig_name = signal.Signals(signum).name
@@ -77,6 +95,7 @@ class SentinelDaemon:
             message="Manual test alert (SIGUSR1) – verifying systemd service context",
             current_value=0.0,
             threshold=0.0,
+            breaching=False,
         )
         now = time.time()
         event = NotificationEvent(
@@ -136,8 +155,10 @@ class SentinelDaemon:
 
             try:
                 snapshot = self._monitor.snapshot()
-                alerts = evaluate(snapshot, self._config.triggers)
-                events = self._alert_states.sync(alerts)
+                alerts = self._evaluator.evaluate(snapshot)
+                events = self._alert_states.sync(
+                    alerts, metric_values(snapshot)
+                )
                 for event in events:
                     try:
                         success = dispatch_notification(

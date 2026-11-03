@@ -7,13 +7,24 @@ from dataclasses import dataclass, field
 
 @dataclass
 class TriggerConfig:
-    """Thresholds that trigger actions."""
+    """Thresholds and damping settings that trigger actions."""
     cpu_percent: float = 90.0
     memory_warning_available_mb: float = 1024.0
     memory_critical_available_mb: float = 50.0
     disk_warning_free_gb: float = 10.0
     disk_critical_free_gb: float = 1.0
     disk_growth_mb_per_sec: float = 50.0
+    swap_warning_percent: float = 80.0
+    swap_critical_percent: float = 95.0
+    # A condition must breach for this many consecutive polls before it fires.
+    # At the default 10s poll interval, 3 samples is a 30s window.
+    breach_samples: int = 3
+    # A condition must be past the hysteresis bound for this many consecutive
+    # polls before it is considered recovered.
+    clear_samples: int = 2
+    # Recovery bound is this far past the trigger threshold (in percent).
+    # For CPU, 5% means a 90% trigger clears below 85.5%.
+    hysteresis_percent: float = 5.0
 
 
 @dataclass
@@ -111,6 +122,11 @@ def load_config(path: str | None = None) -> SentinelConfig:
             disk_warning_free_gb=t.get("disk_warning_free_gb", 10.0),
             disk_critical_free_gb=t.get("disk_critical_free_gb", 1.0),
             disk_growth_mb_per_sec=t.get("disk_growth_mb_per_sec", 50.0),
+            swap_warning_percent=t.get("swap_warning_percent", 80.0),
+            swap_critical_percent=t.get("swap_critical_percent", 95.0),
+            breach_samples=t.get("breach_samples", 3),
+            clear_samples=t.get("clear_samples", 2),
+            hysteresis_percent=t.get("hysteresis_percent", 5.0),
         )
 
     # Actions

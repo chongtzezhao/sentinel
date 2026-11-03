@@ -1,5 +1,7 @@
 """Tests for persistent alert lifecycle and reminder scheduling."""
 
+import json
+
 from sentinel.config import NotificationPolicyConfig
 from sentinel.state import AlertStateStore
 from sentinel.triggers import Alert, AlertLevel
@@ -118,3 +120,57 @@ def test_failed_recovery_is_retried(tmp_path):
     assert len(retry) == 1
     assert retry[0].kind == "recovery"
     assert retry[0].reason == "delivery-retry"
+
+
+def test_recovery_reports_the_value_that_cleared(tmp_path):
+    now = [1000.0]
+    store = _store(tmp_path, now)
+    event = store.sync([_alert()])[0]
+    store.record_result(event, True)
+
+    now[0] += 90
+    recovery = store.sync([], {"disk:/": 12.5})[0]
+    assert recovery.alert.current_value == 12.5
+    # The previous condition stays available for the "Previous condition" line.
+    assert recovery.alert.message == "disk low"
+
+
+def test_invalid_persisted_level_is_ignored(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({
+        "version": 1,
+        "states": [{
+            "metric": "cpu",
+            "level": "CRITICAL",
+            "message": "bad level",
+            "current_value": 95.0,
+            "threshold": 90.0,
+            "unit": "% usage",
+            "active": True,
+            "first_seen": 1.0,
+            "last_seen": 2.0,
+        }],
+    }))
+
+    store = AlertStateStore(
+        NotificationPolicyConfig(state_file=str(path)),
+        now_fn=lambda: 3.0,
+    )
+    assert store.states == {}
+
+
+def test_breaching_flag_survives_state_round_trip(tmp_path):
+    now = [1000.0]
+    store = _store(tmp_path, now)
+    alert = _alert()
+    alert.breaching = False
+
+    event = store.sync([alert])[0]
+    assert event.alert.breaching is False
+    store.record_result(event, True)
+
+    # A reminder rebuilt from persisted state must stay non-breaching too.
+    now[0] += 30
+    reminder = store.sync([alert])[0]
+    assert reminder.reason == "reminder"
+    assert reminder.alert.breaching is False

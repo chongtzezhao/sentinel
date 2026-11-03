@@ -30,6 +30,7 @@ class AlertState:
     successful_notifications: int = 0
     consecutive_failures: int = 0
     force_due: bool = False
+    breaching: bool = True
 
     @classmethod
     def from_alert(cls, alert: Alert, now: float) -> AlertState:
@@ -43,6 +44,7 @@ class AlertState:
             active=True,
             first_seen=now,
             last_seen=now,
+            breaching=alert.breaching,
         )
 
     def as_alert(self) -> Alert:
@@ -53,6 +55,7 @@ class AlertState:
             current_value=self.current_value,
             threshold=self.threshold,
             unit=self.unit,
+            breaching=self.breaching,
         )
 
 
@@ -89,8 +92,17 @@ class AlertStateStore:
     def states(self) -> dict[str, AlertState]:
         return dict(self._states)
 
-    def sync(self, alerts: list[Alert]) -> list[NotificationEvent]:
-        """Update active conditions and return notifications currently due."""
+    def sync(
+        self,
+        alerts: list[Alert],
+        current_values: dict[str, float] | None = None,
+    ) -> list[NotificationEvent]:
+        """Update active conditions and return notifications currently due.
+
+        ``current_values`` is optional; when supplied it updates the value
+        reported in recovery notifications so they show the level that
+        actually cleared the condition rather than the last breaching value.
+        """
         now = self._now()
         current = {alert.metric: alert for alert in alerts}
         changed = False
@@ -112,6 +124,7 @@ class AlertStateStore:
             state.current_value = alert.current_value
             state.threshold = alert.threshold
             state.unit = alert.unit
+            state.breaching = alert.breaching
 
             if not was_active:
                 state.first_seen = now
@@ -135,6 +148,8 @@ class AlertStateStore:
             state.last_attempt = None
             state.consecutive_failures = 0
             state.force_due = self._config.send_recovery
+            if current_values is not None and metric in current_values:
+                state.current_value = current_values[metric]
             if not self._config.send_recovery:
                 del self._states[metric]
             changed = True
@@ -230,6 +245,8 @@ class AlertStateStore:
         for item in raw.get("states", []):
             try:
                 state = AlertState(**item)
+                # Validate the persisted level before it can reach as_alert().
+                AlertLevel(state.level)
                 self._states[state.metric] = state
             except (TypeError, ValueError):
                 continue

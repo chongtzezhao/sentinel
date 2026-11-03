@@ -34,6 +34,14 @@ def _format_status(snap: SystemSnapshot) -> str:
             f"({snap.memory.used_mb:.0f} / {snap.memory.total_mb:.0f} MiB, "
             f"{snap.memory.available_mb:.0f} MiB available)"
         ),
+        (
+            f"  Swap:         {snap.swap.percent:.1f}%  "
+            f"({snap.swap.used_mb:.0f} / {snap.swap.total_mb:.0f} MiB)"
+        ),
+        (
+            f"  Load avg:     {snap.load_avg[0]:.2f} / {snap.load_avg[1]:.2f} / "
+            f"{snap.load_avg[2]:.2f}  (1/5/15m)"
+        ),
     ]
 
     lines.append("")
@@ -73,6 +81,17 @@ def _snapshot_to_dict(snap: SystemSnapshot) -> dict:
             "total_mb": round(snap.memory.total_mb, 1),
             "used_mb": round(snap.memory.used_mb, 1),
             "available_mb": round(snap.memory.available_mb, 1),
+        },
+        "swap": {
+            "percent": round(snap.swap.percent, 1),
+            "total_mb": round(snap.swap.total_mb, 1),
+            "used_mb": round(snap.swap.used_mb, 1),
+            "free_mb": round(snap.swap.free_mb, 1),
+        },
+        "load_avg": {
+            "1m": round(snap.load_avg[0], 2),
+            "5m": round(snap.load_avg[1], 2),
+            "15m": round(snap.load_avg[2], 2),
         },
         "disks": [
             {

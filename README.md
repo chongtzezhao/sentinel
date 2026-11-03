@@ -4,16 +4,31 @@ Lightweight system monitoring with persistent, stateful Telegram alerts.
 
 ## Monitored metrics
 
-- CPU utilization: critical at the configured percentage.
+- CPU utilization: critical at the configured percentage. CPU is treated as an
+  early warning for heat/overheating, so it stays deliberately sensitive.
 - Available RAM: warning and critical thresholds in MiB.
+- Swap usage: warning and critical thresholds as a percentage of swap in use.
 - Available disk capacity for each configured path: warning and critical
   thresholds in GiB.
 - Disk growth rate in MiB/s.
-- Top processes by CPU, memory, and cumulative I/O for status diagnostics.
+- Load averages (1/5/15m) and top processes by CPU, memory, and cumulative I/O
+  for status diagnostics.
 
 The default LY910 policy warns below 10 GiB free disk and becomes critical
 below 1 GiB. RAM warns below 1 GiB available and becomes critical below
-50 MiB.
+50 MiB. Swap warns at 80% used and becomes critical at 95%.
+
+## Trigger damping
+
+A condition must breach its threshold for 3 consecutive polls (30 seconds at
+the default 10s interval) before it alerts. It clears only after 2 consecutive
+polls past a 5% hysteresis bound (for example, CPU alerts at 90% and clears
+below 85.5%). This removes single-sample spikes without hiding sustained
+problems. Three back-to-back spikes can still alert by design; the CPU signal
+is an early warning, not a verdict.
+
+A recovery message reports the value that actually cleared the condition, not
+the last breaching value.
 
 ## Notification lifecycle
 

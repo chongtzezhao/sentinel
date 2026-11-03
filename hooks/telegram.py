@@ -18,7 +18,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sentinel.triggers import Alert
+from sentinel.triggers import Alert, format_value
 
 TELEGRAM_API = "https://api.telegram.org"
 
@@ -57,11 +57,13 @@ def send(
     duration_seconds: float = 0.0,
 ) -> TelegramResult:
     """Send an alert or recovery and verify Telegram's JSON response."""
+    value = format_value(alert)
     if kind == "recovery":
         text = (
             "✅ Sentinel Recovery\n"
             f"Metric: {alert.metric}\n"
             f"Condition active for: {_duration(duration_seconds)}\n"
+            f"Now: {value}\n"
             f"Previous condition: {alert.message}"
         )
     else:
@@ -73,9 +75,6 @@ def send(
             if first_seen is not None
             else "unknown"
         )
-        value = f"{alert.current_value:.2f}"
-        if alert.unit:
-            value = f"{value} {alert.unit}"
         text = (
             f"{icon} Sentinel Alert\n"
             f"Level: {alert.level.value}\n"

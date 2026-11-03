@@ -145,3 +145,53 @@ def test_dispatch_notification_fails_when_telegram_unconfigured(logger, caplog):
     assert result is False
     messages = [r.message for r in caplog.records]
     assert any("Telegram enabled but missing" in m for m in messages)
+
+
+def test_recovery_logs_the_clearing_value(logger, caplog):
+    alert = Alert(
+        metric="cpu",
+        level=AlertLevel.CRITICAL,
+        message="CPU usage at 95.0% (threshold: 90.0%)",
+        current_value=74.2,
+        threshold=90.0,
+        unit="% usage",
+    )
+    event = NotificationEvent(
+        metric="cpu",
+        kind="recovery",
+        alert=alert,
+        first_seen=100.0,
+        event_time=112.0,
+        reason="state-change",
+    )
+
+    with caplog.at_level(logging.INFO, logger="sentinel-test"):
+        assert dispatch_notification(
+            event, ActionConfig(), NotificationsConfig(), logger
+        )
+
+    assert any("now 74.2%" in record.message for record in caplog.records)
+    assert any("previous: CPU usage at 95.0%" in record.message for record in caplog.records)
+
+
+def test_hysteresis_band_alert_does_not_run_process_actions(monkeypatch, logger):
+    called = []
+    monkeypatch.setattr(
+        actions_mod, "kill_processes",
+        lambda *a, **k: called.append("kill"),
+    )
+    alert = _alert()
+    alert.breaching = False
+    event = NotificationEvent(
+        metric="cpu",
+        kind="alert",
+        alert=alert,
+        first_seen=100.0,
+        event_time=200.0,
+        reason="reminder",
+    )
+
+    assert dispatch_notification(
+        event, ActionConfig(kill_processes=["foo"]), NotificationsConfig(), logger
+    )
+    assert called == []

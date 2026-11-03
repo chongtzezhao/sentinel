@@ -18,7 +18,7 @@ import psutil
 
 from sentinel.config import ActionConfig, LogConfig, NotificationsConfig
 from sentinel.state import NotificationEvent
-from sentinel.triggers import Alert
+from sentinel.triggers import Alert, format_value
 
 # ---------------------------------------------------------------------------
 # Sentinel Logger
@@ -155,9 +155,10 @@ def dispatch_notification(
     alert = event.alert
     if event.kind == "recovery":
         logger.info(
-            "RECOVERY %s after %.0fs: %s",
+            "RECOVERY %s after %.0fs: now %s (previous: %s)",
             alert.metric,
             event.duration_seconds,
+            format_value(alert),
             alert.message,
         )
     else:
@@ -168,7 +169,7 @@ def dispatch_notification(
             event.reason,
         )
 
-    if event.kind == "alert":
+    if event.kind == "alert" and alert.breaching:
         # Kill configured processes
         if action_config.kill_processes:
             kill_processes(action_config.kill_processes, action_config.process_whitelist, logger)

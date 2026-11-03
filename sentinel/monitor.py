@@ -24,6 +24,14 @@ class MemoryMetrics:
 
 
 @dataclass
+class SwapMetrics:
+    percent: float = 0.0
+    total_mb: float = 0.0
+    used_mb: float = 0.0
+    free_mb: float = 0.0
+
+
+@dataclass
 class DiskMetrics:
     path: str
     percent: float       # Disk usage percentage
@@ -49,6 +57,8 @@ class SystemSnapshot:
     timestamp: float
     cpu: CpuMetrics
     memory: MemoryMetrics
+    swap: SwapMetrics = field(default_factory=SwapMetrics)
+    load_avg: tuple[float, float, float] = (0.0, 0.0, 0.0)
     disks: list[DiskMetrics] = field(default_factory=list)
     top_cpu: list[ProcessInfo] = field(default_factory=list)
     top_memory: list[ProcessInfo] = field(default_factory=list)
@@ -81,6 +91,26 @@ class SystemMonitor:
             used_mb=vm.used / (1024 ** 2),
             available_mb=vm.available / (1024 ** 2),
         )
+
+    # ---- Swap / load ----
+
+    @staticmethod
+    def _collect_swap() -> SwapMetrics:
+        sm = psutil.swap_memory()
+        return SwapMetrics(
+            percent=sm.percent,
+            total_mb=sm.total / (1024 ** 2),
+            used_mb=sm.used / (1024 ** 2),
+            free_mb=sm.free / (1024 ** 2),
+        )
+
+    @staticmethod
+    def _collect_load() -> tuple[float, float, float]:
+        try:
+            one, five, fifteen = psutil.getloadavg()
+            return (one, five, fifteen)
+        except (AttributeError, OSError):
+            return (0.0, 0.0, 0.0)
 
     # ---- Disk ----
 
@@ -151,6 +181,8 @@ class SystemMonitor:
         """Collect a full system snapshot."""
         cpu = self._collect_cpu()
         mem = self._collect_memory()
+        swap = self._collect_swap()
+        load_avg = self._collect_load()
         disks = self._collect_disks()
         top_cpu, top_mem, top_io = self._collect_processes()
 
@@ -158,6 +190,8 @@ class SystemMonitor:
             timestamp=time.time(),
             cpu=cpu,
             memory=mem,
+            swap=swap,
+            load_avg=load_avg,
             disks=disks,
             top_cpu=top_cpu,
             top_memory=top_mem,
