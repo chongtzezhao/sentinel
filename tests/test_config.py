@@ -24,8 +24,8 @@ def test_missing_file_returns_defaults(tmp_path):
     assert isinstance(cfg, SentinelConfig)
     assert cfg.poll_interval_seconds == 10
     assert cfg.triggers.cpu_percent == 90.0
-    assert cfg.triggers.swap_warning_percent == 80.0
-    assert cfg.triggers.swap_critical_percent == 95.0
+    assert cfg.triggers.memory_pressure_warning == 10.0
+    assert cfg.triggers.memory_pressure_critical == 25.0
     assert cfg.triggers.breach_samples == 3
     assert cfg.triggers.clear_samples == 2
     assert cfg.triggers.hysteresis_percent == 5.0
@@ -41,8 +41,8 @@ def test_json_overrides_are_applied(tmp_path):
             "cpu_percent": 70.0,
             "memory_warning_available_mb": 2048.0,
             "disk_critical_free_gb": 2.0,
-            "swap_warning_percent": 90.0,
-            "swap_critical_percent": 98.0,
+            "memory_pressure_warning": 12.0,
+            "memory_pressure_critical": 30.0,
             "breach_samples": 5,
             "clear_samples": 4,
             "hysteresis_percent": 10.0,
@@ -59,8 +59,8 @@ def test_json_overrides_are_applied(tmp_path):
     assert cfg.triggers.cpu_percent == 70.0
     assert cfg.triggers.memory_warning_available_mb == 2048.0
     assert cfg.triggers.disk_critical_free_gb == 2.0
-    assert cfg.triggers.swap_warning_percent == 90.0
-    assert cfg.triggers.swap_critical_percent == 98.0
+    assert cfg.triggers.memory_pressure_warning == 12.0
+    assert cfg.triggers.memory_pressure_critical == 30.0
     assert cfg.triggers.breach_samples == 5
     assert cfg.triggers.clear_samples == 4
     assert cfg.triggers.hysteresis_percent == 10.0

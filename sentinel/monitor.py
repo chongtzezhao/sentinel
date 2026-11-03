@@ -32,6 +32,18 @@ class SwapMetrics:
 
 
 @dataclass
+class MemoryPressureMetrics:
+    """Linux pressure-stall information for memory."""
+    some_avg10: float = 0.0
+    some_avg60: float = 0.0
+    some_avg300: float = 0.0
+    full_avg10: float = 0.0
+    full_avg60: float = 0.0
+    full_avg300: float = 0.0
+    available: bool = False
+
+
+@dataclass
 class DiskMetrics:
     path: str
     percent: float       # Disk usage percentage
@@ -58,6 +70,9 @@ class SystemSnapshot:
     cpu: CpuMetrics
     memory: MemoryMetrics
     swap: SwapMetrics = field(default_factory=SwapMetrics)
+    memory_pressure: MemoryPressureMetrics = field(
+        default_factory=MemoryPressureMetrics
+    )
     load_avg: tuple[float, float, float] = (0.0, 0.0, 0.0)
     disks: list[DiskMetrics] = field(default_factory=list)
     top_cpu: list[ProcessInfo] = field(default_factory=list)
@@ -111,6 +126,42 @@ class SystemMonitor:
             return (one, five, fifteen)
         except (AttributeError, OSError):
             return (0.0, 0.0, 0.0)
+
+    @staticmethod
+    def _collect_memory_pressure() -> MemoryPressureMetrics:
+        try:
+            with open("/proc/pressure/memory", "r") as handle:
+                lines = handle.read().splitlines()
+        except OSError:
+            return MemoryPressureMetrics()
+
+        values: dict[str, dict[str, float]] = {}
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 2 or parts[0] not in ("some", "full"):
+                continue
+            fields: dict[str, float] = {}
+            for item in parts[1:]:
+                if "=" not in item:
+                    continue
+                key, raw = item.split("=", 1)
+                try:
+                    fields[key] = float(raw)
+                except ValueError:
+                    continue
+            values[parts[0]] = fields
+
+        some = values.get("some", {})
+        full = values.get("full", {})
+        return MemoryPressureMetrics(
+            some_avg10=some.get("avg10", 0.0),
+            some_avg60=some.get("avg60", 0.0),
+            some_avg300=some.get("avg300", 0.0),
+            full_avg10=full.get("avg10", 0.0),
+            full_avg60=full.get("avg60", 0.0),
+            full_avg300=full.get("avg300", 0.0),
+            available=True,
+        )
 
     # ---- Disk ----
 
@@ -182,6 +233,7 @@ class SystemMonitor:
         cpu = self._collect_cpu()
         mem = self._collect_memory()
         swap = self._collect_swap()
+        memory_pressure = self._collect_memory_pressure()
         load_avg = self._collect_load()
         disks = self._collect_disks()
         top_cpu, top_mem, top_io = self._collect_processes()
@@ -191,6 +243,7 @@ class SystemMonitor:
             cpu=cpu,
             memory=mem,
             swap=swap,
+            memory_pressure=memory_pressure,
             load_avg=load_avg,
             disks=disks,
             top_cpu=top_cpu,

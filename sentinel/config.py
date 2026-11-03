@@ -14,8 +14,8 @@ class TriggerConfig:
     disk_warning_free_gb: float = 10.0
     disk_critical_free_gb: float = 1.0
     disk_growth_mb_per_sec: float = 50.0
-    swap_warning_percent: float = 80.0
-    swap_critical_percent: float = 95.0
+    memory_pressure_warning: float = 10.0
+    memory_pressure_critical: float = 25.0
     # A condition must breach for this many consecutive polls before it fires.
     # At the default 10s poll interval, 3 samples is a 30s window.
     breach_samples: int = 3
@@ -122,8 +122,8 @@ def load_config(path: str | None = None) -> SentinelConfig:
             disk_warning_free_gb=t.get("disk_warning_free_gb", 10.0),
             disk_critical_free_gb=t.get("disk_critical_free_gb", 1.0),
             disk_growth_mb_per_sec=t.get("disk_growth_mb_per_sec", 50.0),
-            swap_warning_percent=t.get("swap_warning_percent", 80.0),
-            swap_critical_percent=t.get("swap_critical_percent", 95.0),
+            memory_pressure_warning=t.get("memory_pressure_warning", 10.0),
+            memory_pressure_critical=t.get("memory_pressure_critical", 25.0),
             breach_samples=t.get("breach_samples", 3),
             clear_samples=t.get("clear_samples", 2),
             hysteresis_percent=t.get("hysteresis_percent", 5.0),

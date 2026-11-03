@@ -10,8 +10,8 @@
     "disk_warning_free_gb": 10.0,
     "disk_critical_free_gb": 1.0,
     "disk_growth_mb_per_sec": 50.0,
-    "swap_warning_percent": 80.0,
-    "swap_critical_percent": 95.0,
+    "memory_pressure_warning": 10.0,
+    "memory_pressure_critical": 25.0,
     "breach_samples": 3,
     "clear_samples": 2,
     "hysteresis_percent": 5.0

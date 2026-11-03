@@ -7,16 +7,19 @@ Lightweight system monitoring with persistent, stateful Telegram alerts.
 - CPU utilization: critical at the configured percentage. CPU is treated as an
   early warning for heat/overheating, so it stays deliberately sensitive.
 - Available RAM: warning and critical thresholds in MiB.
-- Swap usage: warning and critical thresholds as a percentage of swap in use.
+- Memory pressure: Linux PSI `some avg60`, the percentage of time tasks are
+  stalled waiting on memory. This is the memory-pressure trigger; swap
+  occupancy alone is diagnostic only.
 - Available disk capacity for each configured path: warning and critical
   thresholds in GiB.
 - Disk growth rate in MiB/s.
-- Load averages (1/5/15m) and top processes by CPU, memory, and cumulative I/O
-  for status diagnostics.
+- Swap usage, load averages (1/5/15m), and top processes by CPU, memory, and
+  cumulative I/O for status diagnostics.
 
 The default LY910 policy warns below 10 GiB free disk and becomes critical
 below 1 GiB. RAM warns below 1 GiB available and becomes critical below
-50 MiB. Swap warns at 80% used and becomes critical at 95%.
+50 MiB. Memory pressure warns at 10% stalled (PSI some avg60) and becomes
+critical at 25%.
 
 ## Trigger damping
 

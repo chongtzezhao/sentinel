@@ -73,31 +73,33 @@ def evaluate(snapshot: SystemSnapshot, thresholds: TriggerConfig) -> list[Alert]
             unit="MiB available",
         ))
 
-    # --- Swap: percentage of swap in use ---
-    if snapshot.swap.percent >= thresholds.swap_critical_percent:
-        alerts.append(Alert(
-            metric="swap",
-            level=AlertLevel.CRITICAL,
-            message=(
-                f"Swap usage critical: {snapshot.swap.percent:.1f}% used "
-                f"(critical: ≥{thresholds.swap_critical_percent:.0f}%)"
-            ),
-            current_value=snapshot.swap.percent,
-            threshold=thresholds.swap_critical_percent,
-            unit="% used",
-        ))
-    elif snapshot.swap.percent >= thresholds.swap_warning_percent:
-        alerts.append(Alert(
-            metric="swap",
-            level=AlertLevel.WARNING,
-            message=(
-                f"Swap usage high: {snapshot.swap.percent:.1f}% used "
-                f"(warning: ≥{thresholds.swap_warning_percent:.0f}%)"
-            ),
-            current_value=snapshot.swap.percent,
-            threshold=thresholds.swap_warning_percent,
-            unit="% used",
-        ))
+    # --- Memory pressure: PSI some avg60 ---
+    if snapshot.memory_pressure.available:
+        psi = snapshot.memory_pressure.some_avg60
+        if psi >= thresholds.memory_pressure_critical:
+            alerts.append(Alert(
+                metric="memory_pressure",
+                level=AlertLevel.CRITICAL,
+                message=(
+                    f"Memory pressure critical: tasks stalled {psi:.1f}% of the "
+                    f"time (PSI some 60s, critical: ≥{thresholds.memory_pressure_critical:.0f}%)"
+                ),
+                current_value=psi,
+                threshold=thresholds.memory_pressure_critical,
+                unit="% stalled (PSI 60s)",
+            ))
+        elif psi >= thresholds.memory_pressure_warning:
+            alerts.append(Alert(
+                metric="memory_pressure",
+                level=AlertLevel.WARNING,
+                message=(
+                    f"Memory pressure high: tasks stalled {psi:.1f}% of the "
+                    f"time (PSI some 60s, warning: ≥{thresholds.memory_pressure_warning:.0f}%)"
+                ),
+                current_value=psi,
+                threshold=thresholds.memory_pressure_warning,
+                unit="% stalled (PSI 60s)",
+            ))
 
     # --- Disk free capacity and growth ---
     for disk in snapshot.disks:
@@ -147,11 +149,19 @@ def metric_values(snapshot: SystemSnapshot) -> dict[str, float]:
     values = {
         "cpu": snapshot.cpu.percent,
         "memory": snapshot.memory.available_mb,
-        "swap": snapshot.swap.percent,
     }
+    if snapshot.memory_pressure.available:
+        values["memory_pressure"] = snapshot.memory_pressure.some_avg60
     for disk in snapshot.disks:
         values[f"disk:{disk.path}"] = disk.free_gb
         values[f"disk_growth:{disk.path}"] = disk.growth_mb_per_sec
+    return values
+
+
+def snapshot_values(snapshot: SystemSnapshot) -> dict[str, float]:
+    """Return values used for recovery text, including diagnostics."""
+    values = metric_values(snapshot)
+    values["swap"] = snapshot.swap.percent
     return values
 
 
@@ -165,6 +175,8 @@ def format_value(alert: Alert) -> str:
         return f"{alert.current_value:.2f} GiB available"
     if alert.unit == "MiB/s growth":
         return f"{alert.current_value:.2f} MB/s growth"
+    if alert.unit == "% stalled (PSI 60s)":
+        return f"{alert.current_value:.1f}% stalled (PSI 60s)"
     value = f"{alert.current_value:.2f}"
     return f"{value} {alert.unit}".strip()
 
@@ -220,6 +232,11 @@ def _refresh_alert(
     elif alert.metric == "swap":
         message = (
             f"Swap usage at {value:.1f}% "
+            f"(still active; clears below {bound:.1f}%)"
+        )
+    elif alert.metric == "memory_pressure":
+        message = (
+            f"Memory pressure at {value:.1f}% stalled "
             f"(still active; clears below {bound:.1f}%)"
         )
     elif alert.metric.startswith("disk_growth:"):

@@ -17,7 +17,7 @@ from sentinel.triggers import (
     Alert,
     AlertLevel,
     TriggerEvaluator,
-    metric_values,
+    snapshot_values,
 )
 
 TEST_ALERT_METRIC = "sentinel:test-alert"
@@ -157,7 +157,7 @@ class SentinelDaemon:
                 snapshot = self._monitor.snapshot()
                 alerts = self._evaluator.evaluate(snapshot)
                 events = self._alert_states.sync(
-                    alerts, metric_values(snapshot)
+                    alerts, snapshot_values(snapshot)
                 )
                 for event in events:
                     try:

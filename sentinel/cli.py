@@ -24,6 +24,16 @@ def _format_status(snap: SystemSnapshot) -> str:
         .astimezone()
         .strftime("%Y-%m-%d %H:%M:%S")
     )
+    if snap.memory_pressure.available:
+        pressure = (
+            f"  Mem pressure: {snap.memory_pressure.some_avg10:.1f}% / "
+            f"{snap.memory_pressure.some_avg60:.1f}% / "
+            f"{snap.memory_pressure.some_avg300:.1f}%  "
+            f"(PSI some 10/60/300s)"
+        )
+    else:
+        pressure = "  Mem pressure: unavailable (PSI not exposed)"
+
     lines = [
         f"=== Sentinel System Status ({ts}) ===",
         "",
@@ -34,6 +44,7 @@ def _format_status(snap: SystemSnapshot) -> str:
             f"({snap.memory.used_mb:.0f} / {snap.memory.total_mb:.0f} MiB, "
             f"{snap.memory.available_mb:.0f} MiB available)"
         ),
+        pressure,
         (
             f"  Swap:         {snap.swap.percent:.1f}%  "
             f"({snap.swap.used_mb:.0f} / {snap.swap.total_mb:.0f} MiB)"
@@ -87,6 +98,15 @@ def _snapshot_to_dict(snap: SystemSnapshot) -> dict:
             "total_mb": round(snap.swap.total_mb, 1),
             "used_mb": round(snap.swap.used_mb, 1),
             "free_mb": round(snap.swap.free_mb, 1),
+        },
+        "memory_pressure": {
+            "available": snap.memory_pressure.available,
+            "some_avg10": round(snap.memory_pressure.some_avg10, 2),
+            "some_avg60": round(snap.memory_pressure.some_avg60, 2),
+            "some_avg300": round(snap.memory_pressure.some_avg300, 2),
+            "full_avg10": round(snap.memory_pressure.full_avg10, 2),
+            "full_avg60": round(snap.memory_pressure.full_avg60, 2),
+            "full_avg300": round(snap.memory_pressure.full_avg300, 2),
         },
         "load_avg": {
             "1m": round(snap.load_avg[0], 2),

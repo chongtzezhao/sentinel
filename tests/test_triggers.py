@@ -7,6 +7,7 @@ from sentinel.monitor import (
     CpuMetrics,
     DiskMetrics,
     MemoryMetrics,
+    MemoryPressureMetrics,
     SwapMetrics,
     SystemSnapshot,
 )
@@ -15,10 +16,20 @@ from sentinel.triggers import (
     AlertLevel,
     TriggerEvaluator,
     evaluate,
+    metric_values,
+    snapshot_values,
 )
 
 
-def _snap(*, cpu=0.0, mem_available=8192.0, swap_percent=0.0, disks=None) -> SystemSnapshot:
+def _snap(
+    *,
+    cpu=0.0,
+    mem_available=8192.0,
+    swap_percent=0.0,
+    psi_some_avg60=0.0,
+    psi_available=True,
+    disks=None,
+) -> SystemSnapshot:
     return SystemSnapshot(
         timestamp=0.0,
         cpu=CpuMetrics(percent=cpu),
@@ -26,6 +37,10 @@ def _snap(*, cpu=0.0, mem_available=8192.0, swap_percent=0.0, disks=None) -> Sys
             percent=0, total_mb=0, used_mb=0, available_mb=mem_available
         ),
         swap=SwapMetrics(percent=swap_percent),
+        memory_pressure=MemoryPressureMetrics(
+            some_avg60=psi_some_avg60,
+            available=psi_available,
+        ),
         disks=disks or [],
     )
 
@@ -46,8 +61,8 @@ def thresholds():
         disk_warning_free_gb=10.0,
         disk_critical_free_gb=1.0,
         disk_growth_mb_per_sec=50.0,
-        swap_warning_percent=80.0,
-        swap_critical_percent=95.0,
+        memory_pressure_warning=10.0,
+        memory_pressure_critical=25.0,
         breach_samples=3,
         clear_samples=2,
         hysteresis_percent=5.0,
@@ -122,15 +137,28 @@ def test_disk_growth_just_below_threshold_silent(thresholds):
     assert evaluate(snap, thresholds) == []
 
 
-def test_swap_warning_and_critical(thresholds):
-    warning = evaluate(_snap(swap_percent=85.0), thresholds)
+def test_memory_pressure_warning_and_critical(thresholds):
+    warning = evaluate(_snap(psi_some_avg60=15.0), thresholds)
     assert len(warning) == 1
-    assert warning[0].metric == "swap"
+    assert warning[0].metric == "memory_pressure"
     assert warning[0].level == AlertLevel.WARNING
+    assert warning[0].current_value == 15.0
 
-    critical = evaluate(_snap(swap_percent=96.0), thresholds)
+    critical = evaluate(_snap(psi_some_avg60=30.0), thresholds)
     assert len(critical) == 1
     assert critical[0].level == AlertLevel.CRITICAL
+
+
+def test_memory_pressure_unavailable_is_silent(thresholds):
+    snap = _snap(psi_some_avg60=99.0, psi_available=False)
+    assert evaluate(snap, thresholds) == []
+
+
+def test_swap_is_diagnostic_not_a_trigger(thresholds):
+    snap = _snap(swap_percent=99.0)
+    assert evaluate(snap, thresholds) == []
+    assert "swap" not in metric_values(snap)
+    assert snapshot_values(snap)["swap"] == 99.0
 
 
 def _cpu_alert() -> Alert:
