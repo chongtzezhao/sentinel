@@ -1,3 +1,10 @@
+# TEMPLATE, not a live unit.
+# scripts/install.sh rewrites the four paths below (WorkingDirectory,
+# EnvironmentFile, ExecStart, ReadWritePaths) with sed and installs the result
+# to /etc/systemd/system/sentinel.service. The /home/ubuntu paths are
+# placeholders on purpose — they never reach a running system. To change the
+# deployed unit, edit this file and re-run scripts/install.sh.
+
 [Unit]
 Description=Sentinel – Lightweight System Monitor
 After=network.target
