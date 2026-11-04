@@ -184,3 +184,18 @@ def test_send_honors_429_retry_after(monkeypatch, logger):
     assert result.success is False
     assert result.retry_after == 17
     assert result.status == 429
+
+
+def test_send_redacts_bot_token_from_errors(monkeypatch, logger, caplog):
+    def boom(*_a, **_kw):
+        raise urllib.error.URLError(
+            "https://api.telegram.org/botTOKEN/sendMessage failed"
+        )
+
+    monkeypatch.setattr(tg_mod.urllib.request, "urlopen", boom)
+
+    with caplog.at_level(logging.ERROR, logger="sentinel-test-telegram"):
+        result = tg_mod.send(_alert(), "TOKEN", "CHAT", logger)
+
+    assert "TOKEN" not in caplog.text
+    assert "TOKEN" not in (result.error or "")

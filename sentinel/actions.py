@@ -7,10 +7,12 @@ kill/restart processes, send HTTP webhooks, and log events.
 import json
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
@@ -91,55 +93,183 @@ def kill_processes(names: list[str], whitelist: list[str], logger: logging.Logge
             continue
 
 
-def restart_processes(names: list[str], whitelist: list[str], logger: logging.Logger) -> None:
-    """Attempt to restart processes by killing and re-launching them.
+def _restart_via_systemd(name: str, logger: logging.Logger) -> bool | None:
+    """Restart a named systemd unit when one exists.
 
-    This uses a simple approach: SIGTERM the process, then try to start it
-    again via ``subprocess.Popen``.  For production use, prefer systemd
-    service restarts.
+    Returns None when *name* is not a unit, True on success, and False when a
+    unit exists but the restart failed. Callers must not fall back on False,
+    or they could start a duplicate copy.
+    """
+    unit = name if "." in name else f"{name}.service"
+    try:
+        probe = subprocess.run(
+            ["systemctl", "cat", unit],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        return None
+    if probe.returncode != 0:
+        return None
+
+    try:
+        result = subprocess.run(
+            ["systemctl", "restart", unit],
+            check=False,
+        )
+    except OSError as exc:
+        logger.error("Cannot restart %s via systemd: %s", unit, exc)
+        return False
+    if result.returncode != 0:
+        logger.error(
+            "systemctl restart %s failed (status %d)",
+            unit,
+            result.returncode,
+        )
+        return False
+    logger.info("Restarted %s via systemd", unit)
+    return True
+
+
+def _terminate_and_wait(
+    pids: list[int],
+    name: str,
+    logger: logging.Logger,
+    timeout: float = 5.0,
+) -> bool:
+    """SIGTERM *pids* and wait for them to exit."""
+    for pid in pids:
+        try:
+            logger.info("Killing %s (pid %d) for restart", name, pid)
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            continue
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not any(psutil.pid_exists(pid) for pid in pids):
+            return True
+        time.sleep(0.1)
+    logger.error(
+        "Process %s did not exit within %.0fs; not starting a duplicate",
+        name,
+        timeout,
+    )
+    return False
+
+
+def restart_processes(names: list[str], whitelist: list[str], logger: logging.Logger) -> None:
+    """Restart processes by unit where possible, else by executable name.
+
+    For systemd-managed services, ``systemctl restart <unit>`` is preferred.
+    The fallback starts the executable in a new session so it survives a
+    Sentinel restart. It cannot supply service-specific args, user, or env;
+    use a systemd unit for those.
     """
     for name in names:
         if name.lower() in (w.lower() for w in whitelist):
             logger.warning("Skipping whitelisted process for restart: %s", name)
             continue
 
-        # Find and kill
-        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        systemd_result = _restart_via_systemd(name, logger)
+        if systemd_result is not None:
+            continue
+
+        pids: list[int] = []
+        for proc in psutil.process_iter(["pid", "name"]):
             try:
                 if (proc.info["name"] or "").lower() == name.lower():
-                    logger.info("Killing %s (pid %d) for restart", name, proc.pid)
-                    os.kill(proc.pid, signal.SIGTERM)
-            except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
+                    pids.append(proc.pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
 
-        # Brief pause then re-launch
-        time.sleep(1)
+        if pids and not _terminate_and_wait(pids, name, logger):
+            continue
+
+        executable = shutil.which(name)
+        if executable is None:
+            logger.error(
+                "Cannot restart %s: executable not found in PATH", name
+            )
+            continue
+
         try:
             logger.info("Re-launching process: %s", name)
             subprocess.Popen(
-                [name],
+                [executable],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                start_new_session=True,
             )
-        except FileNotFoundError:
-            logger.error("Cannot restart %s: executable not found in PATH", name)
         except OSError as exc:
             logger.error("Cannot restart %s: %s", name, exc)
 
 
-def send_webhooks(urls: list[str], alert: Alert, logger: logging.Logger) -> bool:
-    """Send HTTP GET requests to each configured webhook URL."""
+def _mask_url(url: str) -> str:
+    """Return a log-safe webhook URL without path or query secrets."""
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or "unknown"
+    try:
+        port = f":{parts.port}" if parts.port else ""
+    except ValueError:
+        port = ""
+    scheme = parts.scheme or "?"
+    return f"{scheme}://{host}{port}/…"
+
+
+def _webhook_url(url: str, alert: Alert) -> str:
+    """Append alert fields to an existing query string safely."""
+    parts = urllib.parse.urlsplit(url)
+    query = dict(urllib.parse.parse_qsl(parts.query, keep_blank_values=True))
+    query.update({
+        "metric": alert.metric,
+        "value": f"{alert.current_value}",
+        "level": alert.level.value,
+    })
+    return urllib.parse.urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        parts.path,
+        urllib.parse.urlencode(query),
+        parts.fragment,
+    ))
+
+
+def send_webhooks(
+    urls: list[str],
+    alert: Alert,
+    logger: logging.Logger,
+    already_delivered: set[str] | None = None,
+) -> tuple[bool, set[str]]:
+    """Send HTTP GET requests to each configured webhook URL.
+
+    Returns ``(all_succeeded, delivered_urls)`` so callers can skip
+    destinations that already accepted the same event on a retry.
+    """
+    delivered = set(already_delivered or ())
     success = True
     for url in urls:
+        if url in delivered:
+            continue
         try:
-            full_url = f"{url}?metric={alert.metric}&value={alert.current_value}&level={alert.level.value}"
+            full_url = _webhook_url(url, alert)
             req = urllib.request.Request(full_url, method="GET")
             with urllib.request.urlopen(req, timeout=10) as resp:
-                logger.info("Webhook %s responded %d", url, resp.status)
-        except (urllib.error.URLError, OSError) as exc:
-            logger.error("Webhook %s failed: %s", url, exc)
+                logger.info(
+                    "Webhook %s responded %d", _mask_url(url), resp.status
+                )
+                delivered.add(url)
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            status = getattr(exc, "code", None)
+            logger.error(
+                "Webhook %s failed%s: %s",
+                _mask_url(url),
+                f" (status {status})" if status else "",
+                type(exc).__name__,
+            )
             success = False
-    return success
+    return success, delivered
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +281,7 @@ class DeliveryResult:
     """Outcome of one notification dispatch."""
     success: bool
     retry_after: int | None = None
+    delivered: frozenset[str] = frozenset()
 
     def __bool__(self) -> bool:
         return self.success
@@ -201,26 +332,39 @@ def dispatch_notification(
 
     results: list[bool] = []
     retry_after: int | None = None
+    delivered: set[str] = set(event.delivered_destinations)
 
     if action_config.webhook_urls:
-        results.append(send_webhooks(action_config.webhook_urls, alert, logger))
+        webhook_ok, webhook_delivered = send_webhooks(
+            action_config.webhook_urls,
+            alert,
+            logger,
+            delivered,
+        )
+        results.append(webhook_ok)
+        delivered |= webhook_delivered
 
     tg = notifications.telegram
     if tg.enabled and tg.bot_token and tg.chat_id:
-        from hooks.telegram import send as telegram_send
+        if "telegram" in delivered:
+            results.append(True)
+        else:
+            from hooks.telegram import send as telegram_send
 
-        result = telegram_send(
-            alert,
-            tg.bot_token,
-            tg.chat_id,
-            logger,
-            kind=event.kind,
-            first_seen=event.first_seen,
-            duration_seconds=event.duration_seconds,
-            undelivered_alert=event.undelivered_alert,
-        )
-        results.append(result.success)
-        retry_after = getattr(result, "retry_after", None)
+            result = telegram_send(
+                alert,
+                tg.bot_token,
+                tg.chat_id,
+                logger,
+                kind=event.kind,
+                first_seen=event.first_seen,
+                duration_seconds=event.duration_seconds,
+                undelivered_alert=event.undelivered_alert,
+            )
+            results.append(result.success)
+            if result.success:
+                delivered.add("telegram")
+            retry_after = getattr(result, "retry_after", None)
     elif tg.enabled:
         logger.error(
             "Telegram enabled but missing SENTINEL_TELEGRAM_BOT_TOKEN "
@@ -233,4 +377,5 @@ def dispatch_notification(
     return DeliveryResult(
         all(results) if results else True,
         retry_after=retry_after,
+        delivered=frozenset(delivered),
     )

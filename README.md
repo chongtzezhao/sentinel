@@ -44,7 +44,12 @@ delivered, one combined “alert, recovered before delivery” message is sent
 instead. Telegram 429 responses honor the API's `retry_after` value.
 
 Alert state is persisted in `/var/lib/sentinel/alert-state.json`, so restarts
-do not reset notification history.
+do not reset notification history. Delivery runs on a background worker, so a
+slow Telegram or webhook request never blocks metric sampling. Events that are
+queued or in flight at shutdown stay due and retry after restart.
+
+Webhook and Telegram credentials are masked in logs; webhook query parameters
+are encoded and existing query strings are preserved.
 
 ## Commands
 

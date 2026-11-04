@@ -229,3 +229,176 @@ def test_retry_after_delays_the_next_attempt(tmp_path):
     now[0] += 1
     retry = store.sync([_alert()])[0]
     assert retry.reason == "delivery-retry"
+
+
+def test_partial_delivery_persists_successful_destinations(tmp_path):
+    now = [1000.0]
+    store = _store(tmp_path, now)
+    event = store.sync([_alert()])[0]
+    store.record_result(
+        event, False, delivered=frozenset({"telegram"})
+    )
+
+    now[0] += 5
+    retry = store.sync([_alert()])[0]
+    assert retry.delivered_destinations == ("telegram",)
+
+    store.record_result(retry, True)
+    assert store.states["disk:/"].delivered_destinations == []
+
+
+def test_reactivation_is_persisted(tmp_path):
+    now = [1000.0]
+    store = _store(tmp_path, now)
+    event = store.sync([_alert()])[0]
+    store.record_result(event, True)
+
+    now[0] += 90
+    recovery = store.sync([])[0]
+    store.record_result(recovery, False)
+
+    now[0] += 5
+    store.sync([_alert()])
+
+    reloaded = _store(tmp_path, now)
+    assert reloaded.states["disk:/"].active is True
+
+
+def test_level_change_is_persisted(tmp_path):
+    now = [1000.0]
+    store = _store(tmp_path, now)
+    event = store.sync([_alert(AlertLevel.CRITICAL)])[0]
+    store.record_result(event, True)
+
+    now[0] += 1
+    store.sync([_alert(AlertLevel.WARNING)])
+
+    reloaded = _store(tmp_path, now)
+    assert reloaded.states["disk:/"].level == "warning"
+
+
+def test_stale_recovery_does_not_delete_a_new_state(tmp_path):
+    now = [1000.0]
+    store = _store(tmp_path, now)
+    event = store.sync([_alert()])[0]
+    store.record_result(event, True)
+
+    recovery = store.sync([])[0]
+    now[0] += 1
+    new_event = store.sync([_alert()])[0]
+    assert new_event.kind == "alert"
+
+    store.record_result(recovery, True)
+    assert store.states["disk:/"].active is True
+
+
+def test_alert_result_after_recovery_is_ignored(tmp_path):
+    now = [1000.0]
+    store = _store(tmp_path, now)
+    alert = store.sync([_alert()])[0]
+
+    now[0] += 90
+    store.sync([])  # condition recovered while the alert was in flight
+    store.record_result(
+        alert, True, delivered=frozenset({"telegram"})
+    )
+
+    state = store.states["disk:/"]
+    assert state.active is False
+    assert state.delivered_destinations == []
+
+    # The recovery must still deliver to every destination.
+    recovery = store.sync([])[0]
+    assert recovery.kind == "recovery"
+    assert recovery.delivered_destinations == ()
+
+
+def test_level_change_resets_destination_progress(tmp_path):
+    now = [1000.0]
+    store = _store(tmp_path, now)
+    critical = store.sync([_alert(AlertLevel.CRITICAL)])[0]
+    store.record_result(
+        critical, False, delivered=frozenset({"telegram"})
+    )
+
+    now[0] += 1
+    assert store.sync([_alert(AlertLevel.WARNING)]) == []
+
+    now[0] += 4
+    retry = store.sync([_alert(AlertLevel.WARNING)])[0]
+    assert retry.reason == "delivery-retry"
+    assert retry.delivered_destinations == ()
+
+
+def test_repeated_level_visit_rejects_old_delivery_progress(tmp_path):
+    now = [1000.0]
+    store = _store(tmp_path, now)
+    first = store.sync([_alert(AlertLevel.CRITICAL)])[0]
+    store.record_result(first, True)
+
+    now[0] += 1
+    store.sync([_alert(AlertLevel.WARNING)])
+    now[0] += 1
+    current = store.sync([_alert(AlertLevel.CRITICAL)])[0]
+
+    # The old critical event is from an earlier generation.
+    store.record_result(
+        first, False, delivered=frozenset({"telegram"})
+    )
+    assert store.states["disk:/"].delivered_destinations == []
+
+    retry = store.sync([_alert(AlertLevel.CRITICAL)])[0]
+    assert retry.generation == current.generation
+    assert retry.delivered_destinations == ()
+
+
+def test_snapshot_with_old_delivery_progress_is_stale(tmp_path):
+    now = [1000.0]
+    store = _store(tmp_path, now)
+    first = store.sync([_alert()])[0]
+    stale = store.sync([_alert()])[0]
+    assert stale.delivered_destinations == ()
+
+    # The in-flight event records a partial success after the stale snapshot
+    # was taken but before the stale snapshot is submitted.
+    store.record_result(first, False, delivered=frozenset({"telegram"}))
+    assert store.is_current(stale) is False
+
+    # A stale result must not overwrite the newer progress.
+    store.record_result(stale, True)
+    assert store.states["disk:/"].delivered_destinations == ["telegram"]
+
+    now[0] += 5
+    fresh = store.sync([_alert()])[0]
+    assert fresh.delivered_destinations == ("telegram",)
+
+
+def test_snapshot_after_success_is_stale(tmp_path):
+    now = [1000.0]
+    store = _store(tmp_path, now)
+    first = store.sync([_alert()])[0]
+    stale = store.sync([_alert()])[0]
+
+    store.record_result(first, True)
+    assert store.is_current(stale) is False
+
+    store.record_result(stale, True)
+    assert store.states["disk:/"].successful_notifications == 1
+    assert store.sync([_alert()]) == []
+
+
+def test_snapshot_after_retry_after_is_stale(tmp_path):
+    now = [1000.0]
+    store = _store(tmp_path, now)
+    first = store.sync([_alert()])[0]
+    stale = store.sync([_alert()])[0]
+
+    store.record_result(first, False, retry_after=17)
+    assert store.is_current(stale) is False
+
+    now[0] += 16
+    assert store.sync([_alert()]) == []
+
+    now[0] += 1
+    retry = store.sync([_alert()])[0]
+    assert retry.attempt == 1

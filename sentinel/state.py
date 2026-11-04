@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from sentinel.config import NotificationPolicyConfig
@@ -33,6 +34,9 @@ class AlertState:
     breaching: bool = True
     next_attempt: float | None = None
     level_delivered: bool = True
+    delivered_destinations: list[str] = field(default_factory=list)
+    generation: int = 0
+    attempts: int = 0
 
     @classmethod
     def from_alert(cls, alert: Alert, now: float) -> AlertState:
@@ -48,6 +52,7 @@ class AlertState:
             last_seen=now,
             breaching=alert.breaching,
             level_delivered=False,
+            generation=1,
         )
 
     def as_alert(self) -> Alert:
@@ -71,6 +76,9 @@ class NotificationEvent:
     event_time: float
     reason: str
     undelivered_alert: bool = False
+    delivered_destinations: tuple[str, ...] = ()
+    generation: int = 0
+    attempt: int = 0
 
     @property
     def duration_seconds(self) -> float:
@@ -90,11 +98,35 @@ class AlertStateStore:
         self._path = Path(config.state_file)
         self._now = now_fn
         self._states: dict[str, AlertState] = {}
+        self._lock = threading.RLock()
         self._load()
 
     @property
     def states(self) -> dict[str, AlertState]:
-        return dict(self._states)
+        with self._lock:
+            return dict(self._states)
+
+    def is_current(self, event: NotificationEvent) -> bool:
+        """Return True if *event* still matches the live state."""
+        with self._lock:
+            state = self._states.get(event.metric)
+            if state is None:
+                return False
+            if event.generation != state.generation:
+                return False
+            if event.attempt != state.attempts:
+                return False
+            if event.first_seen != state.first_seen:
+                return False
+            if event.alert.level.value != state.level:
+                return False
+            if tuple(state.delivered_destinations) != event.delivered_destinations:
+                return False
+            if event.kind == "alert":
+                return state.active
+            if event.kind == "recovery":
+                return not state.active
+            return False
 
     def sync(
         self,
@@ -107,6 +139,14 @@ class AlertStateStore:
         reported in recovery notifications so they show the level that
         actually cleared the condition rather than the last breaching value.
         """
+        with self._lock:
+            return self._sync_locked(alerts, current_values)
+
+    def _sync_locked(
+        self,
+        alerts: list[Alert],
+        current_values: dict[str, float] | None = None,
+    ) -> list[NotificationEvent]:
         now = self._now()
         current = {alert.metric: alert for alert in alerts}
         changed = False
@@ -132,6 +172,9 @@ class AlertStateStore:
 
             if previous_level != alert.level.value:
                 state.level_delivered = False
+                state.delivered_destinations = []
+                state.generation += 1
+                changed = True
 
             if not was_active:
                 state.first_seen = now
@@ -141,6 +184,9 @@ class AlertStateStore:
                 state.consecutive_failures = 0
                 state.force_due = True
                 state.level_delivered = False
+                state.delivered_destinations = []
+                state.generation += 1
+                changed = True
             elif (
                 previous_level == AlertLevel.WARNING.value
                 and alert.level == AlertLevel.CRITICAL
@@ -179,6 +225,9 @@ class AlertStateStore:
                 else:
                     reason = "reminder"
                 undelivered_alert = not state.active and not state.level_delivered
+                if reason != "delivery-retry" and state.delivered_destinations:
+                    state.delivered_destinations = []
+                    changed = True
                 events.append(
                     NotificationEvent(
                         metric=state.metric,
@@ -188,6 +237,11 @@ class AlertStateStore:
                         event_time=now,
                         reason=reason,
                         undelivered_alert=undelivered_alert,
+                        delivered_destinations=tuple(
+                            state.delivered_destinations
+                        ),
+                        generation=state.generation,
+                        attempt=state.attempts,
                     )
                 )
 
@@ -200,10 +254,38 @@ class AlertStateStore:
         event: NotificationEvent,
         success: bool,
         retry_after: int | None = None,
+        delivered: frozenset[str] | None = None,
     ) -> None:
         """Record a delivery result; failed attempts never count as delivery."""
+        with self._lock:
+            self._record_result_locked(event, success, retry_after, delivered)
+
+    def _record_result_locked(
+        self,
+        event: NotificationEvent,
+        success: bool,
+        retry_after: int | None = None,
+        delivered: frozenset[str] | None = None,
+    ) -> None:
         state = self._states.get(event.metric)
         if state is None:
+            return
+        # Delivery progress belongs to the event lifecycle: an alert result
+        # must not be applied after recovery, and vice versa.
+        if event.kind == "alert" and not state.active:
+            return
+        if event.kind == "recovery" and state.active:
+            return
+        # Ignore results for an event that a newer state has superseded.
+        if event.generation != state.generation:
+            return
+        if event.attempt != state.attempts:
+            return
+        if event.first_seen != state.first_seen:
+            return
+        if event.alert.level.value != state.level:
+            return
+        if tuple(state.delivered_destinations) != event.delivered_destinations:
             return
 
         now = self._now()
@@ -214,22 +296,26 @@ class AlertStateStore:
             state.successful_notifications += 1
             state.consecutive_failures = 0
             state.next_attempt = None
+            state.delivered_destinations = []
             if event.kind == "alert":
                 state.level_delivered = True
             if event.kind == "recovery":
                 del self._states[event.metric]
         else:
             state.consecutive_failures += 1
+            state.delivered_destinations = sorted(delivered or ())
             if retry_after is not None:
                 state.next_attempt = now + max(0.0, float(retry_after))
             else:
                 state.next_attempt = None
+        state.attempts += 1
         self._save()
 
     def reset_for_test(self, metric: str) -> None:
         """Remove a synthetic metric so each manual test runs immediately."""
-        if self._states.pop(metric, None) is not None:
-            self._save()
+        with self._lock:
+            if self._states.pop(metric, None) is not None:
+                self._save()
 
     def _is_due(self, state: AlertState, now: float) -> bool:
         if state.next_attempt is not None and now < state.next_attempt:

@@ -88,12 +88,32 @@ class SystemMonitor:
         self._top_n = top_n
         # Previous disk usage for growth-rate calculation: {path: (timestamp, used_bytes)}
         self._prev_disk: dict[str, tuple[float, int]] = {}
+        # Prime psutil's delta-based CPU counters once at startup. The first
+        # snapshot then has a meaningful window instead of reporting 0.0.
+        psutil.cpu_percent(interval=None)
+        self._cpu_samples = 0
+        self._cpu_primed_at = time.monotonic()
+        self._prime_process_cpu()
+
+    @staticmethod
+    def _prime_process_cpu() -> None:
+        """Prime per-process CPU deltas; the first sample would otherwise be 0."""
+        for _ in psutil.process_iter(
+            ["pid", "name", "cpu_percent", "memory_percent"]
+        ):
+            pass
 
     # ---- CPU ----
 
-    @staticmethod
-    def _collect_cpu() -> CpuMetrics:
-        return CpuMetrics(percent=psutil.cpu_percent(interval=1))
+    def _collect_cpu(self) -> CpuMetrics:
+        # psutil needs two calls to compute a delta. Give the first snapshot a
+        # short window (100ms) without adding a per-snapshot sleep.
+        if self._cpu_samples == 0:
+            remaining = 0.1 - (time.monotonic() - self._cpu_primed_at)
+            if remaining > 0:
+                time.sleep(remaining)
+        self._cpu_samples += 1
+        return CpuMetrics(percent=psutil.cpu_percent(interval=None))
 
     # ---- Memory ----
 
@@ -205,7 +225,11 @@ class SystemMonitor:
     # ---- Processes ----
 
     def _collect_processes(self) -> tuple[list[ProcessInfo], list[ProcessInfo], list[ProcessInfo]]:
-        """Return (top_cpu, top_memory, top_io) process lists."""
+        """Return (top_cpu, top_memory, top_io) process lists.
+
+        Processes that start and exit between snapshots can report 0.0% CPU
+        because psutil only has one sample for them.
+        """
         procs: list[ProcessInfo] = []
         for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent"]):
             try:

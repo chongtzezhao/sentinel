@@ -9,6 +9,7 @@ import sentinel.actions as actions_mod
 from sentinel.actions import (
     dispatch_notification,
     kill_processes,
+    restart_processes,
     send_webhooks,
 )
 from sentinel.config import (
@@ -88,11 +89,17 @@ def test_send_webhooks_encodes_metric_and_value(monkeypatch, logger):
         return _FakeResp()
 
     monkeypatch.setattr(actions_mod.urllib.request, "urlopen", fake_urlopen)
-    assert send_webhooks(
-        ["https://hook.example/x"], _alert(metric="cpu", value=97.5), logger
+    url = "https://hook.example/x?a=1&b=2"
+    ok, delivered = send_webhooks(
+        [url], _alert(metric="disk:/", value=97.5), logger
     )
 
-    assert "metric=cpu" in captured["url"]
+    assert ok is True
+    assert delivered == {url}
+    assert captured["url"].count("?") == 1
+    assert "a=1" in captured["url"]
+    assert "b=2" in captured["url"]
+    assert "metric=disk%3A%2F" in captured["url"]
     assert "value=97.5" in captured["url"]
     assert "level=critical" in captured["url"]
 
@@ -102,7 +109,56 @@ def test_send_webhooks_logs_and_continues_on_error(monkeypatch, logger):
         raise OSError("connection refused")
     monkeypatch.setattr(actions_mod.urllib.request, "urlopen", boom)
 
-    assert not send_webhooks(["https://hook.example/x"], _alert(), logger)
+    ok, delivered = send_webhooks(
+        ["https://hook.example/x"], _alert(), logger
+    )
+    assert ok is False
+    assert delivered == set()
+
+
+def test_send_webhooks_masks_url_secrets(monkeypatch, logger, caplog):
+    class _FakeResp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(
+        actions_mod.urllib.request, "urlopen",
+        lambda *_a, **_kw: _FakeResp(),
+    )
+    url = "https://hooks.example/services/SECRET?token=abc"
+
+    with caplog.at_level(logging.INFO, logger="sentinel-test"):
+        ok, _ = send_webhooks([url], _alert(), logger)
+
+    assert ok is True
+    assert "SECRET" not in caplog.text
+    assert "token=abc" not in caplog.text
+    assert "hooks.example" in caplog.text
+
+
+def test_send_webhooks_hides_secrets_in_error_text(
+    monkeypatch, logger, caplog
+):
+    def boom(req, timeout=None):
+        raise ValueError(f"bad url {req.full_url}")
+
+    monkeypatch.setattr(actions_mod.urllib.request, "urlopen", boom)
+    url = "https://hooks.example/services/SECRET?token=a%2fb"
+
+    with caplog.at_level(logging.ERROR, logger="sentinel-test"):
+        ok, _ = send_webhooks([url], _alert(), logger)
+
+    assert ok is False
+    assert "SECRET" not in caplog.text
+    assert "token" not in caplog.text
+    assert "a%2f" not in caplog.text.lower()
+
+
+def test_send_webhooks_handles_malformed_url(logger):
+    ok, delivered = send_webhooks(["not a url"], _alert(), logger)
+    assert ok is False
+    assert delivered == set()
 
 
 def test_recovery_does_not_run_process_actions(monkeypatch, logger):
@@ -212,3 +268,170 @@ def test_dispatch_notification_propagates_retry_after(monkeypatch, logger):
 
     assert result.success is False
     assert result.retry_after == 17
+
+
+def test_partial_delivery_tracks_successful_destination(monkeypatch, logger):
+    import hooks.telegram as tg_mod
+
+    monkeypatch.setattr(
+        tg_mod, "send",
+        lambda *a, **k: SimpleNamespace(success=True),
+    )
+    url = "https://hook.example/x"
+    monkeypatch.setattr(
+        actions_mod, "send_webhooks",
+        lambda urls, alert, log, already=None: (False, set(already or ())),
+    )
+    notifs = NotificationsConfig(
+        telegram=TelegramConfig(enabled=True, bot_token="t", chat_id="c"),
+    )
+
+    result = dispatch_notification(
+        _event(), ActionConfig(webhook_urls=[url]), notifs, logger
+    )
+
+    assert result.success is False
+    assert result.delivered == frozenset({"telegram"})
+
+
+def test_delivered_destination_is_not_resent(monkeypatch, logger):
+    import hooks.telegram as tg_mod
+
+    sent = []
+    monkeypatch.setattr(
+        tg_mod, "send",
+        lambda *a, **k: sent.append("telegram") or SimpleNamespace(success=True),
+    )
+    url = "https://hook.example/x"
+    monkeypatch.setattr(
+        actions_mod, "send_webhooks",
+        lambda urls, alert, log, already=None: (
+            True, set(already or ()) | set(urls)
+        ),
+    )
+    event = NotificationEvent(
+        metric="cpu",
+        kind="alert",
+        alert=_alert(),
+        first_seen=100.0,
+        event_time=200.0,
+        reason="delivery-retry",
+        delivered_destinations=("telegram",),
+    )
+
+    result = dispatch_notification(
+        event,
+        ActionConfig(webhook_urls=[url]),
+        NotificationsConfig(
+            telegram=TelegramConfig(enabled=True, bot_token="t", chat_id="c"),
+        ),
+        logger,
+    )
+
+    assert result.success is True
+    assert sent == []
+
+
+def test_restart_processes_prefers_systemd(monkeypatch, logger):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(actions_mod.subprocess, "run", fake_run)
+    restart_processes(["nginx"], [], logger)
+
+    assert calls == [
+        ["systemctl", "cat", "nginx.service"],
+        ["systemctl", "restart", "nginx.service"],
+    ]
+
+
+def test_restart_processes_waits_then_relaunches(monkeypatch, logger):
+    class _Proc:
+        pid = 42
+        info = {"pid": 42, "name": "foo"}
+
+    monkeypatch.setattr(
+        actions_mod.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(returncode=1),
+    )
+    monkeypatch.setattr(
+        actions_mod.psutil, "process_iter",
+        lambda attrs: iter([_Proc()]),
+    )
+    killed = []
+    monkeypatch.setattr(
+        actions_mod.os, "kill",
+        lambda pid, sig: killed.append(pid),
+    )
+    monkeypatch.setattr(actions_mod.psutil, "pid_exists", lambda pid: False)
+    monkeypatch.setattr(actions_mod.shutil, "which", lambda name: "/usr/bin/foo")
+    popen = []
+    monkeypatch.setattr(
+        actions_mod.subprocess, "Popen",
+        lambda *a, **k: popen.append((a, k)),
+    )
+
+    restart_processes(["foo"], [], logger)
+
+    assert killed == [42]
+    assert popen
+    assert popen[0][1]["start_new_session"] is True
+
+
+def test_restart_processes_does_not_duplicate_a_live_process(monkeypatch, logger):
+    class _Proc:
+        pid = 42
+        info = {"pid": 42, "name": "foo"}
+
+    monkeypatch.setattr(
+        actions_mod.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(returncode=1),
+    )
+    monkeypatch.setattr(
+        actions_mod.psutil, "process_iter",
+        lambda attrs: iter([_Proc()]),
+    )
+    monkeypatch.setattr(actions_mod.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(actions_mod.psutil, "pid_exists", lambda pid: True)
+    times = iter([0, 1, 2, 3, 4, 5, 6])
+    monkeypatch.setattr(
+        actions_mod.time, "monotonic", lambda: next(times)
+    )
+    monkeypatch.setattr(actions_mod.time, "sleep", lambda seconds: None)
+    popen = []
+    monkeypatch.setattr(
+        actions_mod.subprocess, "Popen",
+        lambda *a, **k: popen.append((a, k)),
+    )
+
+    restart_processes(["foo"], [], logger)
+
+    assert popen == []
+
+
+def test_restart_processes_does_not_fallback_when_systemd_fails(
+    monkeypatch, logger
+):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=1 if cmd[1] == "restart" else 0)
+
+    monkeypatch.setattr(actions_mod.subprocess, "run", fake_run)
+    popen = []
+    monkeypatch.setattr(
+        actions_mod.subprocess, "Popen",
+        lambda *a, **k: popen.append((a, k)),
+    )
+
+    restart_processes(["foo"], [], logger)
+
+    assert calls == [
+        ["systemctl", "cat", "foo.service"],
+        ["systemctl", "restart", "foo.service"],
+    ]
+    assert popen == []

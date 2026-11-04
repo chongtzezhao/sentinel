@@ -12,6 +12,7 @@ import time
 from sentinel.actions import dispatch_notification, setup_logger
 from sentinel.config import SentinelConfig
 from sentinel.monitor import SystemMonitor
+from sentinel.notifier import NotificationWorker
 from sentinel.state import AlertStateStore, NotificationEvent
 from sentinel.triggers import (
     Alert,
@@ -49,6 +50,24 @@ class SentinelDaemon:
                     state.metric,
                 )
         self._evaluator.restore(restored)
+        self._notifier = NotificationWorker(
+            self._dispatch_event,
+            self._alert_states.record_result,
+            self._logger,
+            is_current=lambda event: (
+                event.metric == TEST_ALERT_METRIC
+                or self._alert_states.is_current(event)
+            ),
+        )
+
+    def _dispatch_event(self, event: NotificationEvent):
+        """Send one event from the notification worker."""
+        return dispatch_notification(
+            event,
+            self._config.actions,
+            self._config.notifications,
+            self._logger,
+        )
 
     def _handle_signal(self, signum: int, _frame: object) -> None:
         sig_name = signal.Signals(signum).name
@@ -106,16 +125,14 @@ class SentinelDaemon:
             event_time=now,
             reason="manual-test",
         )
-        result = dispatch_notification(
-            event,
-            self._config.actions,
-            self._config.notifications,
-            self._logger,
-        )
-        if result.success:
-            self._logger.info("Manual test notification completed successfully")
+        if self._notifier.submit(event):
+            self._logger.info(
+                "Manual test alert queued through notification worker"
+            )
         else:
-            self._logger.error("Manual test notification failed")
+            self._logger.error(
+                "Manual test notification not queued (queue busy); try again"
+            )
 
     def run(self) -> None:
         """Start the monitoring loop. Blocks until interrupted."""
@@ -145,52 +162,42 @@ class SentinelDaemon:
             self._config.notification_policy.state_file,
         )
 
-        while self._running:
-            if self._test_alert_pending:
-                self._test_alert_pending = False
-                try:
-                    self._dispatch_test_alert()
-                except Exception:
-                    self._logger.exception("Error dispatching test alert")
-
-            try:
-                snapshot = self._monitor.snapshot()
-                alerts = self._evaluator.evaluate(snapshot)
-                events = self._alert_states.sync(
-                    alerts, snapshot_values(snapshot)
-                )
-                for event in events:
-                    retry_after = None
-                    try:
-                        result = dispatch_notification(
-                            event,
-                            self._config.actions,
-                            self._config.notifications,
-                            self._logger,
-                        )
-                        success = result.success
-                        retry_after = result.retry_after
-                    except Exception:
-                        success = False
-                        self._logger.exception(
-                            "Error dispatching %s notification for %s",
-                            event.kind,
-                            event.metric,
-                        )
-                    self._alert_states.record_result(
-                        event, success, retry_after=retry_after
-                    )
-
-            except Exception:
-                self._logger.exception("Error during monitoring cycle")
-
-            # Sleep in small increments so we can respond to signals promptly
-            waited = 0.0
-            while self._running and waited < self._config.poll_interval_seconds:
+        self._notifier.start()
+        try:
+            while self._running:
                 if self._test_alert_pending:
-                    break  # handle the test alert on the next outer iteration
-                time.sleep(min(1.0, self._config.poll_interval_seconds - waited))
-                waited += 1.0
+                    self._test_alert_pending = False
+                    try:
+                        self._dispatch_test_alert()
+                    except Exception:
+                        self._logger.exception("Error dispatching test alert")
 
-        self._logger.info("Sentinel stopped")
+                try:
+                    snapshot = self._monitor.snapshot()
+                    alerts = self._evaluator.evaluate(snapshot)
+                    events = self._alert_states.sync(
+                        alerts, snapshot_values(snapshot)
+                    )
+                    for event in events:
+                        self._notifier.submit(event)
+
+                except Exception:
+                    self._logger.exception("Error during monitoring cycle")
+
+                # Sleep in small increments so we can respond to signals promptly
+                waited = 0.0
+                while (
+                    self._running
+                    and waited < self._config.poll_interval_seconds
+                ):
+                    if self._test_alert_pending:
+                        break  # handle the test alert on the next outer iteration
+                    time.sleep(
+                        min(1.0, self._config.poll_interval_seconds - waited)
+                    )
+                    waited += 1.0
+        finally:
+            self._notifier.stop()
+            self._logger.info("Sentinel stopped")
+
         sys.exit(0)

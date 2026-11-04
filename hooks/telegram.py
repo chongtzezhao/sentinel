@@ -47,6 +47,11 @@ def _duration(seconds: float) -> str:
     return " ".join(parts)
 
 
+def _redact(text: str, secret: str) -> str:
+    """Keep bot tokens out of logs and error strings."""
+    return text.replace(secret, "<redacted>") if secret else text
+
+
 def send(
     alert: Alert,
     bot_token: str,
@@ -130,7 +135,10 @@ def send(
                 )
                 return TelegramResult(True, status=status, message_id=message_id)
 
-            description = body.get("description", "Telegram returned ok=false")
+            description = _redact(
+                str(body.get("description", "Telegram returned ok=false")),
+                bot_token,
+            )
             logger.error(
                 "Telegram notification failed (status %d): %s",
                 status,
@@ -142,7 +150,7 @@ def send(
         retry_after = None
         try:
             body = json.loads(exc.read().decode())
-            description = body.get("description", description)
+            description = str(body.get("description", description))
             raw_retry = body.get("parameters", {}).get("retry_after")
             if raw_retry is not None:
                 retry_after = int(raw_retry)
@@ -155,6 +163,7 @@ def send(
             ValueError,
         ):
             pass
+        description = _redact(description, bot_token)
 
         if exc.code == 429:
             logger.warning(
@@ -175,6 +184,7 @@ def send(
             retry_after=retry_after,
         )
     except (urllib.error.URLError, OSError) as exc:
-        logger.error("Telegram notification failed: %s", exc)
+        error = _redact(str(exc), bot_token)
+        logger.error("Telegram notification failed: %s", error)
         status = getattr(exc, "code", None)
-        return TelegramResult(False, status=status, error=str(exc))
+        return TelegramResult(False, status=status, error=error)
